@@ -1562,7 +1562,11 @@ cfs(CFs, Opts) ->
     [{"default", CfOpts}] ++ lists:flatmap(fun(Tab) -> admin_cfs(Tab, CfOpts) end, CFs).
 
 cfopts(Opts) ->
-    filter_opts([{merge_operator, erlang_merge_operator}], Opts, rdb_type_extractor:cf_opts_allowed()).
+    filter_opts(
+        [{merge_operator, erlang_merge_operator}],
+        may_re_init_new_native_block_cache(Opts),
+        rdb_type_extractor:cf_opts_allowed()
+    ).
 
 open_opts(Opts) ->
     filter_opts(
@@ -1574,6 +1578,27 @@ open_opts(Opts) ->
         rdb_type_extractor:open_opts_allowed()
     ).
 
+% for support native rocksdb block cache we have to re-init new cache reference everytime
+% when we restart
+may_re_init_new_native_block_cache(Opts) ->
+    BBTOptions = proplists:get_value(block_based_table_options, Opts, []),
+    CacheReference = proplists:get_value(block_cache, BBTOptions, undefined),
+    case {CacheReference, proplists:get_value(
+        block_cache_size,
+        BBTOptions,
+        undefined
+    )} of
+        {undefined, CacheSize} when CacheSize =/= undefined ->
+            {ok, NewCacheRef} = rocksdb:new_lru_cache(CacheSize),
+            lists:keyreplace(
+              block_based_table_options,
+              1,
+              Opts,
+              {block_based_table_options, [{block_cache, NewCacheRef} | BBTOptions]}
+             );
+        _NoMatch ->
+            Opts
+    end.
 
 admin_cfs(Tab, CFOpts) when is_atom(Tab) -> [ {tab_to_cf_name(Tab), CFOpts} ];
 admin_cfs({_, _, _} = T, CFOpts)         -> [ {tab_to_cf_name(T), CFOpts} ];
