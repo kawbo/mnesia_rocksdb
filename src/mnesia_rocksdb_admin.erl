@@ -1574,12 +1574,29 @@ open_opts(Opts) ->
             {create_if_missing, true},
             {create_missing_column_families, true}
         ],
-        Opts,
+        may_enable_db_statistics(Opts),
         rdb_type_extractor:open_opts_allowed()
     ).
 
+% statistics handler have to be re-inited during restart.
+% can't re-use the value stored in db.
+may_enable_db_statistics(Opts) ->
+    case proplists:get_value(statistics, Opts, undefined) of
+        <<"enable">> ->
+            {ok, DbStatHandler} = rocksdb:new_statistics(),
+            lists:keyreplace(
+              statistics,
+              1,
+              Opts,
+              {statistics, DbStatHandler}
+             );
+        _NoMatch ->
+            Opts
+    end.
+
 % for support native rocksdb block cache we have to re-init new cache reference everytime
 % when we restart
+
 may_re_init_new_native_block_cache(Opts) ->
     BBTOptions = proplists:get_value(block_based_table_options, Opts, []),
     CacheReference = proplists:get_value(block_cache, BBTOptions, undefined),
@@ -1589,7 +1606,7 @@ may_re_init_new_native_block_cache(Opts) ->
         undefined
     )} of
         {undefined, CacheSize} when CacheSize =/= undefined ->
-            {ok, NewCacheRef} = rocksdb:new_lru_cache(CacheSize),
+            {ok, NewCacheRef} = rocksdb:new_cache(lru, CacheSize),
             lists:keyreplace(
               block_based_table_options,
               1,
