@@ -1582,7 +1582,7 @@ open_opts(Opts) ->
 % can't re-use the value stored in db.
 may_enable_db_statistics(Opts) ->
     case proplists:get_value(statistics, Opts, undefined) of
-        <<"enable">> ->
+        <<"create">> ->
             {ok, DbStatHandler} = rocksdb:new_statistics(),
             lists:keyreplace(
               statistics,
