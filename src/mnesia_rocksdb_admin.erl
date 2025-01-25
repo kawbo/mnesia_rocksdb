@@ -421,7 +421,7 @@ maybe_load_admin_db({Alias, Opts}, #st{backends = Bs} = St) ->
 
 try_load_admin_db(Alias, AliasOpts, #st{ backends = Bs
                                        , default_opts = DefaultOpts} = St) ->
-    case load_admin_db(Alias, AliasOpts ++ DefaultOpts) of
+    case load_admin_db(Alias, AliasOpts ++ DefaultOpts, St) of
         {ok, #{cf_info := CfI0, mountpoint := MP} = AdminDb} ->
             %% We need to store the persistent ref explicitly here,
             %% since mnesia knows nothing of our admin table.
@@ -1131,7 +1131,7 @@ create_table_as_standalone_(Alias, Name, Exists, MP, TRec, St) ->
 do_open_standalone(CreateIfMissing, Alias, Name, Exists, MP, TRec0,
                    #st{standalone = Ts} = St) ->
     Opts = rocksdb_opts_from_trec(TRec0),
-    case open_db_(MP, Alias, Opts, [], CreateIfMissing) of
+    case open_db_(MP, Alias, Opts, [], CreateIfMissing, Name, St) of
         {ok, #{ cf_info := CfI }} ->
             DbRec = maps:get({ext,Alias,"default"}, CfI),
             CfNames = maps:keys(CfI),
@@ -1474,30 +1474,22 @@ do_delete_table(Alias, Name, Backend, #st{} = St) ->
             {error, not_found}
     end.
 
-load_admin_db(Alias, Opts) ->
+load_admin_db(Alias, Opts, St) ->
     DbName = {admin, Alias},
-    open_db(DbName, Alias, Opts, [DbName], true).
+    open_db(DbName, Alias, Opts, [DbName], true, St).
 
-open_db(DbName, Alias, Opts, CFs, CreateIfMissing) ->
+open_db(DbName, Alias, Opts, CFs, CreateIfMissing, St) ->
     MP = mnesia_rocksdb_lib:data_mountpoint(DbName),
-    open_db_(MP, Alias, Opts, CFs, CreateIfMissing).
+    open_db_(MP, Alias, Opts, CFs, CreateIfMissing, DbName, St).
 
-open_db_(MP, Alias, Opts, CFs0, CreateIfMissing) ->
+open_db_(MP, Alias, Opts, CFs0, CreateIfMissing, DbName, #st{backends = Backends} = St) ->
     Acc0 = #{ mountpoint => MP },
     case filelib:is_dir(MP) of
         false when CreateIfMissing ->
             %% not yet created
             CFs = cfs(CFs0, Opts),
             file:make_dir(MP),
-            OpenOpts = filter_opts(
-                [
-                    {create_if_missing, true},
-                    {create_missing_column_families, true},
-                    {merge_operator, erlang_merge_operator}
-                ],
-                Opts,
-                rdb_type_extractor:open_opts_allowed()
-            ),
+            OpenOpts = open_opts(Opts),
             log_invalid_opts(Opts),
             OpenRes = mnesia_rocksdb_lib:open_rocksdb(MP, OpenOpts, CFs),
             map_cfs(OpenRes, CFs, Alias, Acc0);
@@ -1505,9 +1497,21 @@ open_db_(MP, Alias, Opts, CFs0, CreateIfMissing) ->
             {error, enoent};
         true ->
             %% Assumption: even an old rocksdb database file will have at least "default"
-            {ok,CFs} = rocksdb:list_column_families(MP, Opts),
-            CFs1 = [{CF,[]} || CF <- CFs], %% TODO: this really needs more checking
-            map_cfs(rocksdb_open(MP, Opts, CFs1), CFs1, Alias, Acc0)
+            {ok, CFs} = rocksdb:list_column_families(MP, Opts),
+            CFsWithOpts = case map_size(Backends) of
+                0 ->
+                    [{CF, cfopts([])} || CF <- CFs];
+                _ ->
+                    {ok, Trec} = find_cf(Alias, DbName, maps:get(Alias, Backends), St),
+                    StoredOpts = rocksdb_opts_from_trec(Trec),
+                    [{CF, cfopts(StoredOpts)} || CF <- CFs]
+            end,
+            map_cfs(
+              rocksdb_open(MP, open_opts(Opts), CFsWithOpts),
+              CFsWithOpts,
+              Alias,
+              Acc0
+            )
     end.
 
 log_invalid_opts(Opts) ->
@@ -1558,7 +1562,60 @@ cfs(CFs, Opts) ->
     [{"default", CfOpts}] ++ lists:flatmap(fun(Tab) -> admin_cfs(Tab, CfOpts) end, CFs).
 
 cfopts(Opts) ->
-    filter_opts([{merge_operator, erlang_merge_operator}], Opts, rdb_type_extractor:cf_opts_allowed()).
+    filter_opts(
+        [{merge_operator, erlang_merge_operator}],
+        may_re_init_new_native_block_cache(Opts),
+        rdb_type_extractor:cf_opts_allowed()
+    ).
+
+open_opts(Opts) ->
+    filter_opts(
+        [
+            {create_if_missing, true},
+            {create_missing_column_families, true}
+        ],
+        may_enable_db_statistics(Opts),
+        rdb_type_extractor:open_opts_allowed()
+    ).
+
+% statistics handler have to be re-inited during restart.
+% can't re-use the value stored in db.
+may_enable_db_statistics(Opts) ->
+    case proplists:get_value(statistics, Opts, undefined) of
+        <<"create">> ->
+            {ok, DbStatHandler} = rocksdb:new_statistics(),
+            lists:keyreplace(
+              statistics,
+              1,
+              Opts,
+              {statistics, DbStatHandler}
+             );
+        _NoMatch ->
+            Opts
+    end.
+
+% for support native rocksdb block cache we have to re-init new cache reference everytime
+% when we restart
+
+may_re_init_new_native_block_cache(Opts) ->
+    BBTOptions = proplists:get_value(block_based_table_options, Opts, []),
+    CacheReference = proplists:get_value(block_cache, BBTOptions, undefined),
+    case {CacheReference, proplists:get_value(
+        block_cache_size,
+        BBTOptions,
+        undefined
+    )} of
+        {undefined, CacheSize} when CacheSize =/= undefined ->
+            {ok, NewCacheRef} = rocksdb:new_cache(lru, CacheSize),
+            lists:keyreplace(
+              block_based_table_options,
+              1,
+              Opts,
+              {block_based_table_options, [{block_cache, NewCacheRef} | BBTOptions]}
+             );
+        _NoMatch ->
+            Opts
+    end.
 
 admin_cfs(Tab, CFOpts) when is_atom(Tab) -> [ {tab_to_cf_name(Tab), CFOpts} ];
 admin_cfs({_, _, _} = T, CFOpts)         -> [ {tab_to_cf_name(T), CFOpts} ];
