@@ -53,6 +53,7 @@
         , delete/2       , delete/3
         , delete_object/2, delete_object/3
         , match_delete/2
+        , merge/3        , merge/4
 	, clear_table/1
         , batch_write/2  , batch_write/3
         , update_counter/3, update_counter/4
@@ -739,6 +740,21 @@ insert(Tab, Obj0, Opts) ->
     Key = element(Pos, Obj),
     EncVal = encode_val(Obj, Ref),
     insert_(Ref, Key, encode_key(Key, Ref), EncVal, Obj, Opts).
+
+merge(Tab, Key, MergeOp) ->
+    merge(Tab, Key, MergeOp, []).
+
+merge(Tab, Key, MergeOp, Opts) ->
+    #{encoding := Enc} = Ref = ensure_ref(Tab),
+    case Enc of
+        {_, {value, term}} ->
+            merge_(Ref, Key, MergeOp, Opts);
+        _ ->
+            abort(badarg)
+    end.
+
+merge_(Ref, Key, MergeOp, Opts) ->
+    rdb_merge(Ref, encode_key(Key), MergeOp, Opts).
 
 validate_obj(Obj, #{mode := mnesia}) ->
     Obj;

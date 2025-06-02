@@ -1489,11 +1489,7 @@ open_db_(MP, Alias, Opts, CFs0, CreateIfMissing) ->
             %% not yet created
             CFs = cfs(CFs0),
             file:make_dir(MP),
-            OpenOpts = [ {create_if_missing, true}
-                       , {create_missing_column_families, true}
-                       , {merge_operator, erlang_merge_operator}
-                       | Opts ],
-            OpenRes = mnesia_rocksdb_lib:open_rocksdb(MP, OpenOpts, CFs),
+            OpenRes = rocksdb_open(MP, Opts, CFs),
             map_cfs(OpenRes, CFs, Alias, Acc0);
         false ->
             {error, enoent};
@@ -1504,9 +1500,15 @@ open_db_(MP, Alias, Opts, CFs0, CreateIfMissing) ->
             map_cfs(rocksdb_open(MP, Opts, CFs1), CFs1, Alias, Acc0)
     end.
 
+open_opts(Opts) ->
+    [ {create_if_missing, true}
+    , {create_missing_column_families, true}
+    , {merge_operator, erlang_merge_operator}
+    | Opts ].
+
 rocksdb_open(MP, Opts, CFs) ->
     %% rocksdb:open(MP, Opts, CFs),
-    mnesia_rocksdb_lib:open_rocksdb(MP, Opts, CFs).
+    mnesia_rocksdb_lib:open_rocksdb(MP, open_opts(Opts), CFs).
 
 is_open(Alias, #st{backends = Bs}) ->
     case maps:find(Alias, Bs) of
