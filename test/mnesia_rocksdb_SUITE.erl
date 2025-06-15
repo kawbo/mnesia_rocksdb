@@ -269,7 +269,7 @@ mrdb_abort(Config) ->
     Pre = mrdb:read(tx_abort, a),
     D0 = get_dict(),
     TRes = try mrdb:activity(
-                 tx, rdb,
+                 {tx, #{mnesia_compatible => true}}, rdb,
                  fun() ->
                          [{tx_abort, a, N}] = mrdb:read(tx_abort, a),
                          error(abort_here),

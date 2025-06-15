@@ -53,6 +53,7 @@
         , delete/2       , delete/3
         , delete_object/2, delete_object/3
         , match_delete/2
+        , merge/3        , merge/4
 	, clear_table/1
         , batch_write/2  , batch_write/3
         , update_counter/3, update_counter/4
@@ -297,13 +298,33 @@ do_activity(F, Alias, Ctxt) ->
     end.
 
 try_f(F, Ctxt) ->
+    try_f(mnesia_compatible_aborts(Ctxt), F, Ctxt).
+
+try_f(false, F, Ctxt) ->
     try run_f(F, Ctxt) of
         Res ->
             commit_and_pop(Res)
     catch
+        throw:Something ->
+            abort_and_pop(throw, Something);
+        Cat:Err:T ->
+            %% Without capturing the stacktract here,
+            %% debugging gets pretty difficult. Incompatible with mnesia, though.
+            abort_and_pop(Cat, {Err, T})
+    end;
+try_f(true, F, Ctxt) ->
+    try run_f(F, Ctxt) of
+        Res ->
+            commit_and_pop(Res)
+    catch
+        throw:Something ->
+            abort_and_pop(throw, Something);
         Cat:Err ->
+            %% Without capturing the stacktract here,
+            %% debugging gets pretty difficult
             abort_and_pop(Cat, Err)
     end.
+
 
 run_f(F, Ctxt) ->
     push_ctxt(Ctxt),
@@ -411,7 +432,7 @@ apply_tx_opts(Opts0) when is_map(Opts0) ->
     check_tx_opts(maps:merge(default_tx_opts(), Opts0)).
 
 check_tx_opts(Opts) ->
-    case maps:without([no_snapshot, retries], Opts) of
+    case maps:without([no_snapshot, retries, mnesia_compatible], Opts) of
         Other when map_size(Other) > 0 ->
             abort({invalid_tx_opts, maps:keys(Other)});
         _ ->
@@ -522,6 +543,11 @@ re_throw(Cat, Err) ->
 
 mnesia_compatible_aborts() ->
     mnesia_rocksdb_admin:get_cached_env(mnesia_compatible_aborts, false).
+
+mnesia_compatible_aborts(#{activity := #{mnesia_compatible := Bool}}) ->
+    Bool;
+mnesia_compatible_aborts(_) ->
+    mnesia_compatible_aborts().
 
 fix_error({aborted, Err}) ->
     Err;
@@ -714,6 +740,21 @@ insert(Tab, Obj0, Opts) ->
     Key = element(Pos, Obj),
     EncVal = encode_val(Obj, Ref),
     insert_(Ref, Key, encode_key(Key, Ref), EncVal, Obj, Opts).
+
+merge(Tab, Key, MergeOp) ->
+    merge(Tab, Key, MergeOp, []).
+
+merge(Tab, Key, MergeOp, Opts) ->
+    #{encoding := Enc} = Ref = ensure_ref(Tab),
+    case Enc of
+        {_, {value, term}} ->
+            merge_(Ref, Key, MergeOp, Opts);
+        _ ->
+            abort(badarg)
+    end.
+
+merge_(Ref, Key, MergeOp, Opts) ->
+    rdb_merge(Ref, encode_key(Key), MergeOp, Opts).
 
 validate_obj(Obj, #{mode := mnesia}) ->
     Obj;
