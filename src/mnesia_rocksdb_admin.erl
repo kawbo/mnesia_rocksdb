@@ -1496,7 +1496,7 @@ open_db_(MP, Alias, Opts, CFs0, CreateIfMissing) ->
         true ->
             %% Assumption: even an old rocksdb database file will have at least "default"
             {ok,CFs} = rocksdb:list_column_families(MP, Opts),
-            CFs1 = [{CF,[]} || CF <- CFs], %% TODO: this really needs more checking
+            CFs1 = [{CF, cfopts()} || CF <- CFs], %% TODO: this really needs more checking
             map_cfs(rocksdb_open(MP, Opts, CFs1), CFs1, Alias, Acc0)
     end.
 
