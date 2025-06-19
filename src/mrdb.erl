@@ -1384,15 +1384,7 @@ valid_limit(L) ->
     end.
 
 write_info(Tab, K, V) ->
-    R = ensure_ref(Tab),
-    Alias = case R of
-                #{type := standalone, vsn := 1, alias := A} = TRef ->
-                    %% Also write on legacy info format
-                    write_info_standalone(TRef, K, V),
-                    A;
-                #{alias := A} ->
-                    A
-            end,
+    #{alias := Alias} = ensure_ref(Tab),
     write_info_(ensure_ref({admin, Alias}), Tab, K, V).
 
 write_info_(#{} = R, Tab, K, V) ->
@@ -1409,13 +1401,8 @@ read_info(Tab, K) ->
 read_info(Tab, K, Default) when K==size; K==memory ->
     read_direct_info_(ensure_ref(Tab), K, Default);
 read_info(Tab, K, Default) ->
-    #{alias := Alias} = R = ensure_ref(Tab),
-    case R of
-        #{type := standalone, vsn := 1} = TRef ->
-            read_info_standalone(TRef, K, Default);
-        #{alias := Alias} ->
-            mnesia_rocksdb_admin:read_info(Alias, Tab, K, Default)
-    end.
+    #{alias := Alias} = ensure_ref(Tab),
+    mnesia_rocksdb_admin:read_info(Alias, Tab, K, Default).
 
 read_direct_info_(R, memory, _Def) ->
     get_property(R, <<"rocksdb.total-sst-files-size">>, integer, 0);
@@ -1438,26 +1425,6 @@ get_property(#{db_ref := R, cf_handle := CfH}, Prop, Type, Default) ->
 
 %%rocksdb_boolean(<<"1">>) -> true;
 %%rocksdb_boolean(<<"0">>) -> false.
-
-write_info_standalone(#{} = R, K, V) ->
-    EncK = <<?INFO_TAG, (encode_key(K, sext))/binary>>,
-    EncV = term_to_binary(V),
-    rdb_put(R, EncK, EncV, write_opts(R, [])).
-
-read_info_standalone(#{} = R, K, Default) ->
-    EncK = <<?INFO_TAG, (encode_key(K, sext))/binary>>,
-    get_info_res(rdb_get(R, EncK, read_opts(R, [])), Default).
-
-get_info_res(Res, Default) ->
-    case Res of
-        not_found ->
-            Default;
-        {ok, Bin} ->
-            %% no fancy tricks when encoding/decoding info values
-            binary_to_term(Bin);
-        {error, E} ->
-            error(E)
-    end.
 
 %% insert_bag_v2(Ref, K, V, Opts) ->
 %%     rdb_merge(Ref, K, {list_append, [V]}
