@@ -189,7 +189,7 @@ fill_tab(t = Tab) ->
     [mrdb:insert(Tab, {Tab, K, V}) || {K,V} <- raw_objs()],
     ok;
 fill_tab(r = Tab) ->
-    [mrdb:insert(Tab, Obj) || Obj <- objs()],
+    [mrdb:insert(Tab, Obj) || Obj <- objs()],
     ok.
 
 prefixed_raw_objs(Pfx) ->
