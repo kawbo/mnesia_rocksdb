@@ -675,11 +675,7 @@ select(_Alias, Tab, Ms, Limit) when Limit==infinity; is_integer(Limit) ->
 
 slot(_Alias, Tab, Pos) when is_integer(Pos), Pos >= 0 ->
     #{semantics := Sem} = Ref = get_ref(Tab),
-    Start = case Ref of
-                #{type := standalone, vsn := 1} -> <<?DATA_START>>;
-                _ -> first
-            end,
-    First = fun(I) -> rocksdb:iterator_move(I, Start) end,
+    First = fun(I) -> rocksdb:iterator_move(I, first) end,
     F = case Sem of
             bag -> fun(I) -> slot_iter_set(First(I), I, 0, Pos, Ref) end;
             _   -> fun(I) -> slot_iter_set(First(I), I, 0, Pos, Ref) end

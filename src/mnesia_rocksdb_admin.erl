@@ -285,7 +285,6 @@ write_info_(Ref, Tab, K, V) ->
 
 write_info_encv(Ref, Tab, K, V) ->
     EncK = mnesia_rocksdb_lib:encode_key({info,Tab,K}, sext),
-    maybe_write_standalone_info(Ref, K, V),
     mrdb:rdb_put(Ref, EncK, V, []).
 
 delete_info(Alias, Tab, K) ->
@@ -293,29 +292,7 @@ delete_info(Alias, Tab, K) ->
 
 delete_info_(Ref, Tab, K) ->
     EncK = mnesia_rocksdb_lib:encode_key({info, Tab, K}, sext),
-    maybe_delete_standalone_info(Ref, K),
     mrdb:rdb_delete(Ref, EncK, []).
-
-maybe_write_standalone_info(Ref, K, V) ->
-    case Ref of
-        #{type := standalone, vsn := 1, db_ref := DbRef} ->
-            EncK = mnesia_rocksdb_lib:encode_key(K, sext),
-            Key = <<?INFO_TAG, EncK/binary>>,
-            EncV = mnesia_rocksdb_lib:encode_val(V, term),
-            rocksdb:put(DbRef, Key, EncV, []);
-        _ ->
-            ok
-    end.
-
-maybe_delete_standalone_info(Ref, K) ->
-    case Ref of
-        #{type := standalone, vsn := 1, db_ref := DbRef} ->
-            EncK = mnesia_rocksdb_lib:encode_key(K, sext),
-            Key = <<?INFO_TAG, EncK/binary>>,
-            rocksdb:delete(DbRef, Key, []);
-        _ ->
-            ok
-    end.
 
 write_table_property(Alias, Tab, Prop) when is_tuple(Prop), size(Prop) >= 1 ->
     call(Alias, {write_table_property, Tab, Prop}).
@@ -1108,16 +1085,11 @@ table_exists_as_standalone(Name) ->
 
 create_table_as_standalone(Alias, Name, Exists, MP, TRec, St) ->
     case create_table_as_standalone_(Alias, Name, Exists, MP, TRec, St) of
-        {ok, #{type := standalone, vsn := Vsn1,
-               encoding := Enc1} = Cf, _St1} = Ok ->
+        {ok, #{ type := standalone, vsn := Vsn1
+              , encoding := Enc1}
+        , _St1} = Ok ->
             write_admin_info(standalone_vsn_and_enc, {Vsn1, Enc1},
                              Alias, Name),
-            case Vsn1 of
-                1 ->
-                    load_info(Alias, Name, Cf);
-                _ ->
-                    skip
-            end,
             Ok;
         Other ->
             Other
@@ -1174,7 +1146,7 @@ guess_table_vsn_and_encoding(true, #{properties := #{attributes := As},
 set_default_guess(#{type := standalone} = R) ->
     case application:get_env(mnesia_rocksdb, standalone_default_vsn, ?VSN) of
         1 ->
-            R#{vsn => 1, encoding => {sext, {object, term}}};
+            error({unsupported_vsn, 1});
         V ->
             R#{vsn => V}
     end.
@@ -1233,50 +1205,13 @@ guess_val_encoding(Bin, Arity) ->
 %% for the presence of some metadata, and still considers it empty if there
 %% is no user data.
 table_is_empty(#{} = DbRec) ->
-    Start = iterator_data_start(DbRec),
     mrdb:with_rdb_iterator(
       DbRec, fun(I) ->
-                     case mrdb:rdb_iterator_move(I, Start) of
+                     case mrdb:rdb_iterator_move(I, first) of
                          {ok, _, _} -> false;
                          _          -> true
                      end
              end).
-
-iterator_data_start(#{vsn := 1}) -> <<?DATA_START>>;
-iterator_data_start(_)           -> first.
-
-load_info(Alias, Name, Cf) ->
-    ARef = get_ref({admin, Alias}),
-    mrdb:with_rdb_iterator(
-      Cf, fun(I) ->
-                  load_info_(rocksdb:iterator_move(I, first), I, ARef, Name)
-          end).
-
-load_info_(Res, I, ARef, Tab) ->
-    case Res of
-        {ok, << ?INFO_TAG, K/binary >>, V} ->
-            DecK = mnesia_rocksdb_lib:decode_key(K),
-            case read_info_(ARef, Tab, DecK, undefined) of
-                undefined ->
-                    write_info_encv(ARef, Tab, DecK, V);
-                <<131,_/binary>> = Value ->
-                    %% Due to a previous bug, info values could be double-encoded with binary_to_term()
-                    try binary_to_term(Value) of
-                        _DecVal ->
-                            %% We haven't been storing erlang-term encoded data as info,
-                            %% so assume this is double-encoded and correct
-                            write_info_encv(ARef, Tab, DecK, Value)
-                    catch
-                        error:_ ->
-                            skip
-                    end;
-                _ ->
-                    skip
-            end,
-            load_info_(rocksdb:iterator_move(I, next), I, ARef, Tab);
-        _ ->
-            ok
-    end.
 
 check_version(TRec) ->
     user_property(mrdb_version, TRec, ?VSN).

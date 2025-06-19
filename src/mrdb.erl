@@ -67,8 +67,9 @@
         , last/1         , last/2
         , select/2       , select/3
         , select/1
-        , fold/3         , fold/4      , fold/5
-        , rdb_fold/4     , rdb_fold/5
+        , fold/3             , fold/4        , fold/5
+        , rdb_fold/4         , rdb_fold/5
+        , rdb_rev_fold/4     , rdb_rev_fold/5
         , write_info/3
         , read_info/2
         , read_info/1
@@ -1362,6 +1363,15 @@ rdb_fold(Tab, Fun, Acc, Prefix, Limit) when is_function(Fun, 3)
                                           , is_binary(Prefix) ->
     true = valid_limit(Limit),
     mrdb_select:rdb_fold(ensure_ref(Tab), Fun, Acc, Prefix, Limit).
+
+rdb_rev_fold(Tab, Fun, Acc, Prefix) when is_function(Fun, 3)
+                                         , is_binary(Prefix) ->
+    rdb_rev_fold(Tab, Fun, Acc, Prefix, infinity).
+
+rdb_rev_fold(Tab, Fun, Acc, Prefix, Limit) when is_function(Fun, 3)
+                                                , is_binary(Prefix) ->
+    true = valid_limit(Limit),
+    mrdb_select:rdb_rev_fold(ensure_ref(Tab), Fun, Acc, Prefix, Limit).
 
 valid_limit(L) ->
     case L of

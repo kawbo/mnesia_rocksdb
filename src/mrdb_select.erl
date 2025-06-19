@@ -1,11 +1,12 @@
 %% -*- mode: erlang; erlang-indent-level: 4; indent-tabs-mode: nil -*-
 -module(mrdb_select).
 
--export([ select/3    %% (Ref, MatchSpec, Limit)
-        , select/4    %% (Ref, MatchSpec, AccKeys, Limit)
-        , select/1    %% (Cont)
-        , fold/5      %% (Ref, Fun, Acc, MatchSpec, Limit)
-        , rdb_fold/5  %% (Ref, Fun, Acc, Prefix, Limit)
+-export([ select/3       %% (Ref, MatchSpec, Limit)
+        , select/4       %% (Ref, MatchSpec, AccKeys, Limit)
+        , select/1       %% (Cont)
+        , fold/5         %% (Ref, Fun, Acc, MatchSpec, Limit)
+        , rdb_fold/5     %% (Ref, Fun, Acc, Prefix, Limit)
+        , rdb_rev_fold/5 %% (Ref, Fun, Acc, Prefix, Limit)
         ]).
 
 -export([continuation_info/2]).
@@ -86,12 +87,41 @@ fold_({L, Cont}, Fun, Acc) ->
 rdb_fold(Ref, Fun, Acc, Prefix, Limit) ->
     mrdb:with_rdb_iterator(
       Ref, fun(I) ->
-                   MovRes = rocksdb:iterator_move(I, first(Ref)),
+                   MovRes = fwd_init_seek(I, Prefix),
                    i_rdb_fold(MovRes, I, Prefix, Fun, Acc, Limit)
            end).
 
-first(#{vsn := 1}) -> <<?DATA_START>>;
-first(_) -> first.
+rdb_rev_fold(Ref, Fun, Acc, Prefix, Limit) ->
+    mrdb:with_rdb_iterator(
+      Ref, fun(I) ->
+                   MovRes = rev_init_seek(I, Prefix),
+                   i_rdb_rev_fold(MovRes, I, Prefix, Fun, Acc, Limit)
+           end).
+
+fwd_init_seek(I, <<>>) ->
+    rocksdb:iterator_move(I, first);
+fwd_init_seek(I, Prefix) ->
+    rocksdb:iterator_move(I, {seek, Prefix}).
+
+rev_init_seek(I, <<>>) ->
+    rocksdb:iterator_move(I, last);
+rev_init_seek(I, Prefix) ->
+    Tgt = case incr_prefix(Prefix) of
+              last -> last;
+              Pfx1 when is_binary(Pfx1) ->
+                  {seek, Pfx1}
+          end,
+    rocksdb:iterator_move(I, Tgt).
+
+incr_prefix(<<>>) -> last;
+incr_prefix(Pfx) when is_binary(Pfx) ->
+    PfxI = binary:decode_unsigned(Pfx),
+    MaxI = (1 bsl (byte_size(Pfx) * 8)) - 1,
+    case PfxI + 1 of
+        I1 when I1 >= MaxI -> last;
+        I1 ->
+            binary:encode_unsigned(I1)
+    end.
 
 i_rdb_fold({ok, K, V}, I, Pfx, Fun, Acc, Limit) when Limit > 0 ->
     case is_prefix(Pfx, K) of
@@ -102,6 +132,19 @@ i_rdb_fold({ok, K, V}, I, Pfx, Fun, Acc, Limit) when Limit > 0 ->
             Acc
     end;
 i_rdb_fold(_, _, _, _, Acc, _) ->
+    Acc.
+
+i_rdb_rev_fold({ok, K, V}, I, Pfx, Fun, Acc, Limit) when Limit > 0 ->
+    case is_prefix(Pfx, K) of
+        true ->
+            i_rdb_rev_fold(rocksdb:iterator_move(I, prev), I, Pfx, Fun,
+                           Fun(K, V, Acc), decr(Limit));
+        false when K > Pfx ->
+            i_rdb_rev_fold(rocksdb:iterator_move(I, prev), I, Pfx, Fun, Acc, Limit);
+        false ->
+            Acc
+    end;
+i_rdb_rev_fold(_, _, _, _, Acc, _) ->
     Acc.
 
 i_select(I, #sel{ keypat = Pfx
