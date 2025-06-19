@@ -61,15 +61,17 @@
         , get_batch/1
         , snapshot/1
         , release_snapshot/1
-        , first/1        , first/2
-        , next/2         , next/3
-        , prev/2         , prev/3
-        , last/1         , last/2
-        , select/2       , select/3
+        , first/1         , first/2
+        , next/2          , next/3
+        , prev/2          , prev/3
+        , last/1          , last/2
+        , select/2        , select/3
+        , select_reverse/2, select_reverse/3
         , select/1
-        , fold/3             , fold/4        , fold/5
-        , rdb_fold/4         , rdb_fold/5
-        , rdb_rev_fold/4     , rdb_rev_fold/5
+        , fold/3            , fold/4        , fold/5
+        , fold_reverse/3    , fold_reverse/4, fold_reverse/5
+        , rdb_fold/4        , rdb_fold/5
+        , rdb_fold_reverse/4, rdb_fold_reverse/5
         , write_info/3
         , read_info/2
         , read_info/1
@@ -541,7 +543,6 @@ re_throw(Cat, Err) ->
 	throw -> throw(Err)
     end.
 
-
 mnesia_compatible_aborts() ->
     mnesia_rocksdb_admin:get_cached_env(mnesia_compatible_aborts, false).
 
@@ -662,10 +663,25 @@ maybe_tx_ctxt([#{activity := #{type := Type} = A} = C|_], R) ->
 inherit_ctxt(Ref, R) ->
     maps:merge(Ref, maps:with([snapshot, activity], R)).
 
+%% @doc Create an iterator on table `Tab' for the duration of `Fun'
+%%
+%% The iterator is passed to the provided fun as `Fun(Iterator)', and is
+%% closed once the fun terminates.
+%% @equiv with_iterator(Tab, Fun, [])
+%% @end
 -spec with_iterator(ref_or_tab(), fun( (mrdb_iterator()) -> Res )) -> Res.
 with_iterator(Tab, Fun) ->
     with_iterator(Tab, Fun, []).
 
+%% @doc Create an iterator on table `Tab' with `ReadOptions' for the duration of `Fun'
+%%
+%% The iterator is passed to the provided fun as `Fun(Iterator)', and is
+%% closed once the fun terminates.
+%%
+%% The iterator respects `mnesia_rocksdb' metadata, so accesses through the iterator
+%% will return `{ok, Obj}' where  `Obj' is the complete decoded object.
+%% For rocksdb-level iterators, see {@link with_rdb_iterator/3}.
+%% @end
 -spec with_iterator(ref_or_tab(), fun( (mrdb_iterator()) -> Res ), read_options()) -> Res.
 with_iterator(Tab, Fun, Opts) ->
     R = ensure_ref(Tab),
@@ -1301,6 +1317,13 @@ select(Tab, Pat, Limit) when Limit == infinity; is_integer(Limit), Limit > 0 ->
     true = valid_limit(Limit),
     mrdb_select:select(ensure_ref(Tab), Pat, Limit).
 
+select_reverse(Tab, Pat) ->
+    select_reverse(Tab, Pat, infinity).
+
+select_reverse(Tab, Pat, Limit) when Limit == infinity; is_integer(Limit), Limit > 0 ->
+    true = valid_limit(Limit),
+    mrdb_select:select_reverse(ensure_ref(Tab), Pat, Limit).
+
 select(Cont) ->
     mrdb_select:select(Cont).
 
@@ -1355,6 +1378,16 @@ fold(Tab, Fun, Acc, MatchSpec, Limit) ->
     true = valid_limit(Limit),
     mrdb_select:fold(ensure_ref(Tab), Fun, Acc, MatchSpec, Limit).
 
+fold_reverse(Tab, Fun, Acc) ->
+    fold_reverse(Tab, Fun, Acc, [{'_', [], ['$_']}]).
+
+fold_reverse(Tab, Fun, Acc, MatchSpec) ->
+    fold_reverse(Tab, Fun, Acc, MatchSpec, infinity).
+
+fold_reverse(Tab, Fun, Acc, MatchSpec, Limit) ->
+    true = valid_limit(Limit),
+    mrdb_select:fold_reverse(ensure_ref(Tab), Fun, Acc, MatchSpec, Limit).
+
 rdb_fold(Tab, Fun, Acc, Prefix) when is_function(Fun, 3)
                                    , is_binary(Prefix) ->
     rdb_fold(Tab, Fun, Acc, Prefix, infinity).
@@ -1364,14 +1397,14 @@ rdb_fold(Tab, Fun, Acc, Prefix, Limit) when is_function(Fun, 3)
     true = valid_limit(Limit),
     mrdb_select:rdb_fold(ensure_ref(Tab), Fun, Acc, Prefix, Limit).
 
-rdb_rev_fold(Tab, Fun, Acc, Prefix) when is_function(Fun, 3)
+rdb_fold_reverse(Tab, Fun, Acc, Prefix) when is_function(Fun, 3)
                                          , is_binary(Prefix) ->
-    rdb_rev_fold(Tab, Fun, Acc, Prefix, infinity).
+    rdb_fold_reverse(Tab, Fun, Acc, Prefix, infinity).
 
-rdb_rev_fold(Tab, Fun, Acc, Prefix, Limit) when is_function(Fun, 3)
+rdb_fold_reverse(Tab, Fun, Acc, Prefix, Limit) when is_function(Fun, 3)
                                                 , is_binary(Prefix) ->
     true = valid_limit(Limit),
-    mrdb_select:rdb_rev_fold(ensure_ref(Tab), Fun, Acc, Prefix, Limit).
+    mrdb_select:rdb_fold_reverse(ensure_ref(Tab), Fun, Acc, Prefix, Limit).
 
 valid_limit(L) ->
     case L of
