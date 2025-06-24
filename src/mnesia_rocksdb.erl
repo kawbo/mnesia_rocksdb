@@ -262,18 +262,9 @@ i_show_table(_, _, 0, _) ->
 i_show_table(I, Move, Limit, Ref) ->
     case rocksdb:iterator_move(I, Move) of
         {ok, EncKey, EncVal} ->
-            {Type,Val} =
-                case EncKey of
-                    << ?INFO_TAG, K/binary >> ->
-                        K1 = decode_key(K, Ref),
-                        V = decode_val(EncVal, K1, Ref),
-                        {info,V};
-                    _ ->
-                        K = decode_key(EncKey, Ref),
-                        V = decode_val(EncVal, K, Ref),
-                        {data,V}
-                end,
-            io:fwrite("~p: ~p~n", [Type, Val]),
+            K = decode_key(EncKey, Ref),
+            Val = decode_val(EncVal, K, Ref),
+            io:fwrite("~p~n", [Val]),
             i_show_table(I, next, Limit-1, Ref);
         _ ->
             ok
@@ -675,11 +666,7 @@ select(_Alias, Tab, Ms, Limit) when Limit==infinity; is_integer(Limit) ->
 
 slot(_Alias, Tab, Pos) when is_integer(Pos), Pos >= 0 ->
     #{semantics := Sem} = Ref = get_ref(Tab),
-    Start = case Ref of
-                #{type := standalone, vsn := 1} -> <<?DATA_START>>;
-                _ -> first
-            end,
-    First = fun(I) -> rocksdb:iterator_move(I, Start) end,
+    First = fun(I) -> rocksdb:iterator_move(I, first) end,
     F = case Sem of
             bag -> fun(I) -> slot_iter_set(First(I), I, 0, Pos, Ref) end;
             _   -> fun(I) -> slot_iter_set(First(I), I, 0, Pos, Ref) end
