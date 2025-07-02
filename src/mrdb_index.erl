@@ -9,6 +9,10 @@
         , fold/4
         , rev_fold/4
         , index_ref/2
+        , select/3
+        , select/4
+        , select_reverse/3
+        , select_reverse/4
         ]).
 
 -record(mrdb_ix_iter, { i    :: mrdb:mrdb_iterator()
@@ -88,6 +92,22 @@ fold_(Tab, IxPos, Start, Dir, FoldFun, Acc) ->
               iter_fold(I, Start, Dir, FoldFun, Acc)
       end).
 
+select(Tab, Ix, MS) ->
+    select(Tab, Ix, MS, infinity).
+
+select(Tab, Ix, MS, Limit) ->
+    #{} = R = mrdb:ensure_ref(Tab),
+    #{} = IxR = ensure_index_ref(Ix, R),
+    mrdb_select:select(IxR#{derive_obj_f => mk_derive_obj_f(R)}, MS, Limit).
+
+select_reverse(Tab, Ix, MS) ->
+    select_reverse(Tab, Ix, MS, infinity).
+
+select_reverse(Tab, Ix, MS, Limit) ->
+    #{} = R = mrdb:ensure_ref(Tab),
+    #{} = IxR = ensure_index_ref(Ix, R),
+    mrdb_select:select_reverse(IxR#{derive_obj_f => mk_derive_obj_f(R)}, MS, Limit).
+
 iter_fold(I, Start, Dir, Fun, Acc) ->
     iter_fold_(iterator_move(I, Start), I, Dir, Fun, Acc).
 
@@ -119,6 +139,22 @@ iterator_move_bag(#mrdb_ix_iter{i = I, sub = Sub}, Dir) ->
             end;
         Other ->
             Other
+    end.
+
+%% Used for mrdb_select:select()
+%% The select operation folds over index keys, and for matching keys,
+%% calls the `derive_obj_f/1` fun, which normally just does `Obj -> [Obj]`.
+%% In the case of indexes, it fetches the object, if it exists, and then
+%% returns `[{IndexKey, Object}]`, which is what the matchspec should operate on.
+%%
+mk_derive_obj_f(Ref) ->
+    fun({{IxK, Key}}) ->
+            case mrdb:read(Ref, Key, []) of
+                [Obj] ->
+                    [{IxK, Obj}];
+                [] ->
+                    []
+            end
     end.
 
 -spec opt_read(mrdb:ref_or_tab(), Key :: any()) -> any().

@@ -30,6 +30,7 @@
              , limit
              , key_only = false                 % TODO: not used
              , direction = forward
+             , derive_obj_f = fun unit_l/1
              }).
 
 select(Ref, MS, Limit) when is_map(Ref), is_list(MS) ->
@@ -58,7 +59,9 @@ mk_sel(#{name := Tab} = Ref, MS, Dir, Limit) ->
          compiled_ms = ets:match_spec_compile(MS),
          key_only = needs_key_only(MS),
          direction = Dir,
-         limit = Limit}.
+         limit = Limit,
+         derive_obj_f = derive_f(Ref)}.
+
 
 select(Cont) ->
     case Cont of
@@ -266,8 +269,9 @@ select_traverse({ok, K, V}, Limit, Pfx, MS, I, #sel{ref = R, direction = Dir} = 
     case is_prefix(Pfx, K) of
         true ->
             DecKey = decode_key(K, R),
-            Rec = decode_val(V, DecKey, R),
-            case ets:match_spec_run([Rec], MS) of
+            Rec0 = decode_val(V, DecKey, R),
+            RecL = derive_object(Rec0, Sel),
+            case ets:match_spec_run(RecL, MS) of
                 [] ->
                     select_traverse(
                       rocksdb:iterator_move(I, next_or_prev(Dir)), Limit, Pfx, MS,
@@ -341,6 +345,9 @@ i_move(I, K, reverse) ->
 i_move(I, K, forward) ->
     rocksdb:iterator_move(I, K).
 
+derive_object(R, #sel{derive_obj_f = F}) ->
+    F(R).
+
 keypat([H|T], KeyPos, Ref) ->
     keypat(T, KeyPos, Ref, keypat_pfx(H, KeyPos, Ref)).
 
@@ -362,3 +369,8 @@ keypat_pfx({HeadPat,_Gs,_}, KeyPos, #{encoding := {sext,_}}) when is_tuple(HeadP
 keypat_pfx(_, _, _) ->
     <<>>.
 
+derive_f(#{derive_obj_f := F}) when is_function(F, 1) -> F;
+derive_f(_) -> fun unit_l/1.
+
+unit_l(X) ->
+    [X].

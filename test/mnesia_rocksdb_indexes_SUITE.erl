@@ -236,11 +236,21 @@ test_index_plugin(Config) ->
     if Type == rdb ->
             Res1 = lists:sort(mrdb:index_read(Tab,<<"sen">>, {pfx})),
             Res2 = lists:sort(mrdb:index_read(Tab,<<"whi">>, {pfx})),
+            ok = test_select(Tab,{pfx},[{'_', [], ['$_']}]),
             [{Tab,"foobar","sentence"}] = mrdb:index_read(
                                             Tab, <<"foo">>, {pfx});
        true ->
             ok
     end.
+
+test_select(Tab, Ix, MS) ->
+    Res = mrdb_index:select(Tab, Ix, MS),
+    ct:log("mrdb_index:select(~p, ~p, ~p) -> ~p", [Tab, Ix, MS, Res]),
+    RevRes = mrdb_index:select_reverse(Tab, Ix, MS),
+    ct:log("mrdb_index:select_reverse(~p, ~p, ~p) -> ~p", [Tab, Ix, MS, RevRes]),
+    {Res,Res} = {Res, lists:reverse(RevRes)},
+    ok.
+
 
 ixtype(T) when T==bag;
                T==ordered ->
