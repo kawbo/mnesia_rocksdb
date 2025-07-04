@@ -237,6 +237,9 @@ test_index_plugin(Config) ->
             Res1 = lists:sort(mrdb:index_read(Tab,<<"sen">>, {pfx})),
             Res2 = lists:sort(mrdb:index_read(Tab,<<"whi">>, {pfx})),
             ok = test_select(Tab,{pfx},[{'_', [], ['$_']}]),
+            MS2 = [{{<<"whi">>,{Tab,"truth",'_'}},[],['$_']}],
+            [_] = mrdb_index:select(Tab, {pfx}, MS2),
+            ok = test_select(Tab, {pfx}, MS2),
             [{Tab,"foobar","sentence"}] = mrdb:index_read(
                                             Tab, <<"foo">>, {pfx});
        true ->

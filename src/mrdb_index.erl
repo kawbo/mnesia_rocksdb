@@ -37,6 +37,11 @@
 
 -export_type([ ix_iterator/0 ]).
 
+-spec index_ref(mrdb:ref_or_tab(), mrdb:index_position()) -> mrdb:db_ref().
+index_ref(Tab, Ix) ->
+    #{} = R = mrdb:ensure_ref(Tab),
+    ensure_index_ref(Ix, R).
+
 -spec with_iterator(mrdb:ref_or_tab(), mrdb:index_position(), fun( (ix_iterator()) -> Res)) -> Res.
 with_iterator(Tab, IxPos, Fun) when is_function(Fun, 1) ->
     {ok, I} = iterator(Tab, IxPos),
@@ -98,7 +103,9 @@ select(Tab, Ix, MS) ->
 select(Tab, Ix, MS, Limit) ->
     #{} = R = mrdb:ensure_ref(Tab),
     #{} = IxR = ensure_index_ref(Ix, R),
-    mrdb_select:select(IxR#{derive_obj_f => mk_derive_obj_f(R)}, MS, Limit).
+    MSpre = pre_match_spec(MS),
+    mrdb_select:select(IxR#{ derive_obj_f => mk_derive_obj_f(R)
+                           , pre_ms => MSpre }, MS, Limit).
 
 select_reverse(Tab, Ix, MS) ->
     select_reverse(Tab, Ix, MS, infinity).
@@ -106,7 +113,9 @@ select_reverse(Tab, Ix, MS) ->
 select_reverse(Tab, Ix, MS, Limit) ->
     #{} = R = mrdb:ensure_ref(Tab),
     #{} = IxR = ensure_index_ref(Ix, R),
-    mrdb_select:select_reverse(IxR#{derive_obj_f => mk_derive_obj_f(R)}, MS, Limit).
+    MSpre = pre_match_spec(MS),
+    mrdb_select:select_reverse(IxR#{ derive_obj_f => mk_derive_obj_f(R)
+                                   , pre_ms => MSpre }, MS, Limit).
 
 iter_fold(I, Start, Dir, Fun, Acc) ->
     iter_fold_(iterator_move(I, Start), I, Dir, Fun, Acc).
@@ -115,10 +124,6 @@ iter_fold_({ok, IxVal, Obj}, I, Dir, Fun, Acc) ->
     iter_fold_(iterator_move(I, Dir), I, Dir, Fun, Fun(IxVal, Obj, Acc));
 iter_fold_({error, _}, _, _, _, Acc) ->
     Acc.
-
-index_ref(Tab, Pos) ->
-    TRef = mrdb:ensure_ref(Tab),
-    ensure_index_ref(Pos, TRef).
 
 iterator_move_set(#mrdb_ix_iter{i = I, sub = Sub}, Dir) ->
     case mrdb:iterator_move(I, Dir) of
@@ -140,6 +145,13 @@ iterator_move_bag(#mrdb_ix_iter{i = I, sub = Sub}, Dir) ->
         Other ->
             Other
     end.
+
+pre_match_spec([{{KeyPat,ObjPat}, Gs, MatchBody} | T]) ->
+    [{{{KeyPat,'_'},ObjPat}, Gs, MatchBody} | pre_match_spec(T)];
+pre_match_spec([H|T]) ->
+    [H | pre_match_spec(T)];
+pre_match_spec([]) ->
+    [].
 
 %% Used for mrdb_select:select()
 %% The select operation folds over index keys, and for matching keys,
