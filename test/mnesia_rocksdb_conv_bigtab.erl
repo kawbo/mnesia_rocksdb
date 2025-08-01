@@ -22,6 +22,7 @@
 
 -record(t, {k, i, v}).
 
+-dialyzer({nowarn_function, run/1}).
 run(Sz) ->
     mnesia:stop(),
     init(),

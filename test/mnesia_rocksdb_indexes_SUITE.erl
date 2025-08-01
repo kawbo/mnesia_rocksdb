@@ -152,8 +152,8 @@ end_per_testcase(_, _) ->
 %% ======================================================================
 
 cfg([Tab, Type, IxType], Config) ->
-    [{my_config, #{tab => Tab, type => Type, ixtype => IxType}} | Config];
-cfg(Cfg, Config) when is_map(Cfg) -> [{my_config, Cfg} | Config].
+    [{my_config, #{tab => Tab, type => Type, ixtype => IxType}} | Config].
+%% cfg(Cfg, Config) when is_map(Cfg) -> [{my_config, Cfg} | Config].
 
 cfg(Config) -> ?config(my_config, Config).
 
