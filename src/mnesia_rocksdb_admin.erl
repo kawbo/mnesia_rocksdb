@@ -78,7 +78,7 @@
              | {add_aliases, [alias()]}
              | {write_table_property, tabname(), tuple()}
              | {remove_aliases, [alias()]}
-             | {migrate, [{tabname(), map()}], rpt()}
+             | {migrate, [tabname() | {tabname(), map()}], rpt()}
              | {prep_close, table()}
              | {close_table, table()}
 	     | {clear_table, table() | cf() }.
@@ -272,9 +272,16 @@ delete_info_(Ref, Tab, K) ->
 write_table_property(Alias, Tab, Prop) when is_tuple(Prop), size(Prop) >= 1 ->
     call(Alias, {write_table_property, Tab, Prop}).
 
+-spec migrate_standalone(alias(), Tabs) -> Res when
+      Tabs :: [tabname() | {tabname(),map()}],
+      Res  :: [{tabname(), {ok,any()} | {error, any()}}].
 migrate_standalone(Alias, Tabs) ->
     migrate_standalone(Alias, Tabs, undefined).
 
+-spec migrate_standalone(alias(), Tabs, Rpt) -> Res when
+      Tabs :: [tabname() | {tabname(),map()}],
+      Rpt  :: 'undefined' | pid() | atom(),
+      Res  :: [{tabname(), {ok,any()} | {error, any()}}].
 migrate_standalone(Alias, Tabs, Rpt0) ->
     Rpt = case Rpt0 of
               undefined -> undefined;

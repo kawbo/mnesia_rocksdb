@@ -216,6 +216,7 @@ mrdb_transactions_(Config) ->
     delete_tabs(Created),
     ok.
 
+-dialyzer(no_return).
 mrdb_abort_reasons(_Config) ->
     Prev = mnesia_rocksdb_admin:set_and_cache_env(mnesia_compatible_aborts, true),
     X = some_value,

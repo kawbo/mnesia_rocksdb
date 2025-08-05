@@ -132,14 +132,15 @@
                               | sync_dirty.
 
 -type tx_options() :: #{ retries => retries()
-                       , no_snapshot => boolean() }.
+                       , no_snapshot => boolean()
+                       , mnesia_compatible => boolean() }.
 -type mrdb_activity_type() :: tx | {tx, tx_options()} | batch.
 
 -type activity_type() :: mrdb_activity_type() | mnesia_activity_type().
 
 -type key() :: any().
 -type obj() :: tuple().
--type index_position() :: atom() | pos().
+-type index_position() :: atom() | pos() | plugin_ix_pos().
 
 -type db_handle()  :: rocksdb:db_handle().
 -type cf_handle()  :: rocksdb:cf_handle().
@@ -155,10 +156,14 @@
 -type activity() :: tx_activity() | batch_activity().
 
 -type pos() :: non_neg_integer().
+-type plugin_ix_pos() :: {atom()}.
 
+-type propkey()    :: any().
+-type propvalue()  :: any().
 -type properties() :: #{ record_name := atom()
                        , attributes  := [atom()]
                        , index       := [{pos(), bag | ordered}]
+                       , user_properties => #{propkey() => propvalue()}
                        }.
 -type semantics()  :: bag | set.
 -type key_encoding() :: 'raw' | 'sext' | 'term'.

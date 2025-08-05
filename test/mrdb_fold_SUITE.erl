@@ -90,7 +90,7 @@ mk_tab(G) ->
     end.
 
 tab_name(fold    ) -> r;
-tab_name(select  ) -> r;
+%% tab_name(select  ) -> r;
 tab_name(rdb_fold) -> t.
 
 create_tab(T) ->
