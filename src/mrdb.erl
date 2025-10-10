@@ -68,6 +68,7 @@
         , select/2        , select/3
         , select_reverse/2, select_reverse/3
         , select/1
+        , ms/2
         , fold/3            , fold/4        , fold/5
         , fold_reverse/3    , fold_reverse/4, fold_reverse/5
         , rdb_fold/4        , rdb_fold/5
@@ -104,6 +105,7 @@
               , db_ref/0
               , ref_or_tab/0
               , index_position/0
+              , match_pattern/0
               ]).
 
 -include("mnesia_rocksdb.hrl").
@@ -124,6 +126,9 @@
 -type inner() :: non_neg_integer().
 -type outer() :: non_neg_integer().
 -type retries() :: outer() | {inner(), outer()}.
+
+-type matchpat_map() :: #{atom() => _}.
+-type match_pattern() :: matchpat_map() | ets:match_pattern().
 
 %% activity type 'ets' makes no sense in this context
 -type mnesia_activity_type() :: transaction
@@ -1331,6 +1336,55 @@ select_reverse(Tab, Pat, Limit) when Limit == infinity; is_integer(Limit), Limit
 
 select(Cont) ->
     mrdb_select:select(Cont).
+
+%% @doc Produce a match specification for select(), supporting map-based match patterns
+%%
+%% Using record syntax in match patterns tends to conflict with type checking. This
+%% function offers an alternative approach, drawing on the fact that mnesia_rocksdb
+%% keeps the record name and attribute names readily available as persistent terms.
+%%
+%% When using the map-based representation, the match pattern is built by matching
+%% attribute names to map elements; any attribute not found in the map gets set to '_'.
+%% Thus, ```[{#balance{key = {Acct,'$1'},_='_'},[{'>=','$1',Height}],['$_']}]''' can be
+%% created as ```ms(balance,[{#{key => {Acct,'$1'}},[{'>=','$1',Height}],['$_']}])'''.
+%%
+%% This has the advantage over `ms_transform' that it can handle bound variables
+%% in the match pattern. The function works on all mnesia table types.
+%% @end
+-spec ms(ref_or_tab(), [{match_pattern(), [_], [_]}]) -> ets:match_spec().
+ms(Tab, Pat) ->
+    #{ attributes := Attrs
+     , record_name := RecName } = any_tab_props(Tab),
+    [{headpat(RecName, Attrs, Hd), Gs, Body}
+     || {Hd, Gs, Body} <- Pat].
+
+any_tab_props(Tab) ->
+    try mrdb_props(Tab)
+    catch
+        exit:{aborted,{bad_type,_}} ->
+            mnesia_props(Tab)
+    end.
+
+mrdb_props(Tab) ->
+    #{properties := Props} = get_ref(Tab),
+    Props.
+
+mnesia_props(Tab) ->
+    try mnesia_props_(Tab)
+    catch
+        exit:{aborted, _} ->
+            mnesia:abort({bad_type, Tab})
+    end.
+
+mnesia_props_(Tab) ->
+    #{ record_name => mnesia:table_info(Tab, record_name)
+     , attributes  => mnesia:table_info(Tab, attributes) }.
+
+headpat(RecName, Attrs, Hd) when is_map(Hd) ->
+    list_to_tuple([RecName | [maps:get(A, Hd, '_')
+                              || A <- Attrs]]);
+headpat(_, _, Hd) when is_tuple(Hd); is_atom(Hd) ->
+    Hd.
 
 clear_table(Tab) ->
     match_delete(Tab, '_').
