@@ -131,6 +131,18 @@ depend on having an up to date size count at all times, you need to maintain
 it yourself. If you only need the size occasionally, you may traverse the
 table to count the elements.
 
+When `mrdb` transactions abort, they will return a stacktrace caught
+from within the transaction fun, giving much better debugging info.
+This is different from how mnesia does it.
+
+If behavior closer to mnesia's abort returns are needed, say, for backwards
+compatibility, this can be controlled by setting the environment variable
+`-mnesia_rocksdb mnesia_compatible_aborts true`, or by adding a transaction
+option, e.g. `mrdb:activity({tx, #{mnesia_compatible => true}}, fun() ... end)`.
+For really performance-critical transactions which may abort often, it might
+make a difference to set this option to `true`, since there is a cost involved
+in producing stacktraces.
+
 
 ### <a name="Mnesia_backend_plugins">Mnesia backend plugins</a> ###
 

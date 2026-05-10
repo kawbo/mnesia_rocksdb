@@ -27,6 +27,9 @@
         , mrdb_two_procs_tx_inner_restart/1
         , mrdb_two_procs_snap/1
         , mrdb_three_procs/1
+        , create_counters/1
+        , update_counters/1
+        , restart_node/1
         ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -42,7 +45,8 @@ all() ->
 groups() ->
     [
       {all_tests, [sequence], [ {group, checks}
-                              , {group, mrdb} ]}
+                              , {group, mrdb}
+                              , {group, counters}]}
                               %% , error_handling ]}
     , {checks, [sequence], [ encoding_sext_attrs
                            , encoding_binary_binary
@@ -57,6 +61,10 @@ groups() ->
                          , mrdb_two_procs_tx_inner_restart
                          , mrdb_two_procs_snap
                          , mrdb_three_procs ]}
+    , {counters, [sequence], [ create_counters
+                             , update_counters
+                             , restart_node
+                             , update_counters ]}
     ].
 
 
@@ -208,6 +216,7 @@ mrdb_transactions_(Config) ->
     delete_tabs(Created),
     ok.
 
+-dialyzer(no_return).
 mrdb_abort_reasons(_Config) ->
     Prev = mnesia_rocksdb_admin:set_and_cache_env(mnesia_compatible_aborts, true),
     X = some_value,
@@ -269,7 +278,7 @@ mrdb_abort(Config) ->
     Pre = mrdb:read(tx_abort, a),
     D0 = get_dict(),
     TRes = try mrdb:activity(
-                 tx, rdb,
+                 {tx, #{mnesia_compatible => true}}, rdb,
                  fun() ->
                          [{tx_abort, a, N}] = mrdb:read(tx_abort, a),
                          error(abort_here),
@@ -748,6 +757,35 @@ await_other_down_(P, MRef, Line) ->
 get_attempt() ->
     #{activity := #{attempt := Attempt}} = mrdb:current_context(),
     Attempt.
+
+create_counters(_Config) ->
+    create_tab(counters, []),
+    mrdb:insert(counters, {counters, c0, 1}),
+    mrdb:update_counter(counters, c1, 1),
+    [{counters, c0, 1}] = mrdb:read(counters, c0),
+    [{counters, c1, 1}] = mrdb:read(counters, c1),
+    ct:log("Created tab counters, with objs c0 (1) and c1 (1)", []),
+    ok.
+
+restart_node(_Config) ->
+    mnesia:stop(),
+    ok = mnesia:start(),
+    ct:log("mnesia restarted", []),
+    ok.
+
+update_counters(_Config) ->
+    [{counters, c0, C0Prev}] = mrdb:read(counters, c0),
+    [{counters, c1, C1Prev}] = mrdb:read(counters, c1),
+    ct:log("co: ~p, c1: ~p", [C0Prev, C1Prev]),
+    ok = mrdb:update_counter(counters, c0, 1),
+    ok = mrdb:update_counter(counters, c1, 1),
+    ct:log("Incremented c0 and c1 by 1", []),
+    C0 = C0Prev + 1,
+    C1 = C1Prev + 1,
+    [{counters, c0, C0}] = mrdb:read(counters, c0),
+    [{counters, c1, C1}] = mrdb:read(counters, c1),
+    ct:log("c0: ~p, c1: ~p", [C0, C1]),
+    ok.
 
 create_tabs(Tabs, Config) ->
     Res = lists:map(fun create_tab/1, Tabs),

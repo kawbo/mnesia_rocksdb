@@ -260,10 +260,10 @@ plain_transform1(Fun, [F|Fs]) when is_atom(element(1,F)) ->
         continue ->
             [list_to_tuple(plain_transform1(Fun, tuple_to_list(F))) |
              plain_transform1(Fun, Fs)];
-        {done, NewF} ->
-            [NewF | Fs];
-        {error, Reason} ->
-            io:format("Error: ~p (~p)~n", [F,Reason]);
+        %% {done, NewF} ->
+        %%     [NewF | Fs];
+        %% {error, Reason} ->
+        %%     io:format("Error: ~p (~p)~n", [F,Reason]);
         NewF when is_tuple(NewF) ->
             [NewF | plain_transform1(Fun, Fs)]
     end;
