@@ -53,6 +53,7 @@
         , delete/2       , delete/3
         , delete_object/2, delete_object/3
         , match_delete/2
+        , merge/3        , merge/4
 	, clear_table/1
         , batch_write/2  , batch_write/3
         , update_counter/3, update_counter/4
@@ -60,14 +61,18 @@
         , get_batch/1
         , snapshot/1
         , release_snapshot/1
-        , first/1        , first/2
-        , next/2         , next/3
-        , prev/2         , prev/3
-        , last/1         , last/2
-        , select/2       , select/3
+        , first/1         , first/2
+        , next/2          , next/3
+        , prev/2          , prev/3
+        , last/1          , last/2
+        , select/2        , select/3
+        , select_reverse/2, select_reverse/3
         , select/1
-        , fold/3         , fold/4      , fold/5
-        , rdb_fold/4     , rdb_fold/5
+        , ms/2
+        , fold/3            , fold/4        , fold/5
+        , fold_reverse/3    , fold_reverse/4, fold_reverse/5
+        , rdb_fold/4        , rdb_fold/5
+        , rdb_fold_reverse/4, rdb_fold_reverse/5
         , write_info/3
         , read_info/2
         , read_info/1
@@ -100,6 +105,7 @@
               , db_ref/0
               , ref_or_tab/0
               , index_position/0
+              , match_pattern/0
               ]).
 
 -include("mnesia_rocksdb.hrl").
@@ -121,6 +127,9 @@
 -type outer() :: non_neg_integer().
 -type retries() :: outer() | {inner(), outer()}.
 
+-type matchpat_map() :: #{atom() => _}.
+-type match_pattern() :: matchpat_map() | ets:match_pattern().
+
 %% activity type 'ets' makes no sense in this context
 -type mnesia_activity_type() :: transaction
                               | sync_transaction
@@ -128,14 +137,15 @@
                               | sync_dirty.
 
 -type tx_options() :: #{ retries => retries()
-                       , no_snapshot => boolean() }.
+                       , no_snapshot => boolean()
+                       , mnesia_compatible => boolean() }.
 -type mrdb_activity_type() :: tx | {tx, tx_options()} | batch.
 
 -type activity_type() :: mrdb_activity_type() | mnesia_activity_type().
 
 -type key() :: any().
 -type obj() :: tuple().
--type index_position() :: atom() | pos().
+-type index_position() :: atom() | pos() | plugin_ix_pos().
 
 -type db_handle()  :: rocksdb:db_handle().
 -type cf_handle()  :: rocksdb:cf_handle().
@@ -151,10 +161,14 @@
 -type activity() :: tx_activity() | batch_activity().
 
 -type pos() :: non_neg_integer().
+-type plugin_ix_pos() :: {atom()}.
 
+-type propkey()    :: any().
+-type propvalue()  :: any().
 -type properties() :: #{ record_name := atom()
                        , attributes  := [atom()]
                        , index       := [{pos(), bag | ordered}]
+                       , user_properties => #{propkey() => propvalue()}
                        }.
 -type semantics()  :: bag | set.
 -type key_encoding() :: 'raw' | 'sext' | 'term'.
@@ -297,13 +311,33 @@ do_activity(F, Alias, Ctxt) ->
     end.
 
 try_f(F, Ctxt) ->
+    try_f(mnesia_compatible_aborts(Ctxt), F, Ctxt).
+
+try_f(false, F, Ctxt) ->
     try run_f(F, Ctxt) of
         Res ->
             commit_and_pop(Res)
     catch
+        throw:Something ->
+            abort_and_pop(throw, Something);
+        Cat:Err:T ->
+            %% Without capturing the stacktract here,
+            %% debugging gets pretty difficult. Incompatible with mnesia, though.
+            abort_and_pop(Cat, {Err, T})
+    end;
+try_f(true, F, Ctxt) ->
+    try run_f(F, Ctxt) of
+        Res ->
+            commit_and_pop(Res)
+    catch
+        throw:Something ->
+            abort_and_pop(throw, Something);
         Cat:Err ->
+            %% Without capturing the stacktract here,
+            %% debugging gets pretty difficult
             abort_and_pop(Cat, Err)
     end.
+
 
 run_f(F, Ctxt) ->
     push_ctxt(Ctxt),
@@ -411,7 +445,7 @@ apply_tx_opts(Opts0) when is_map(Opts0) ->
     check_tx_opts(maps:merge(default_tx_opts(), Opts0)).
 
 check_tx_opts(Opts) ->
-    case maps:without([no_snapshot, retries], Opts) of
+    case maps:without([no_snapshot, retries, mnesia_compatible], Opts) of
         Other when map_size(Other) > 0 ->
             abort({invalid_tx_opts, maps:keys(Other)});
         _ ->
@@ -519,9 +553,13 @@ re_throw(Cat, Err) ->
 	throw -> throw(Err)
     end.
 
-
 mnesia_compatible_aborts() ->
     mnesia_rocksdb_admin:get_cached_env(mnesia_compatible_aborts, false).
+
+mnesia_compatible_aborts(#{activity := #{mnesia_compatible := Bool}}) ->
+    Bool;
+mnesia_compatible_aborts(_) ->
+    mnesia_compatible_aborts().
 
 fix_error({aborted, Err}) ->
     Err;
@@ -635,10 +673,25 @@ maybe_tx_ctxt([#{activity := #{type := Type} = A} = C|_], R) ->
 inherit_ctxt(Ref, R) ->
     maps:merge(Ref, maps:with([snapshot, activity], R)).
 
+%% @doc Create an iterator on table `Tab' for the duration of `Fun'
+%%
+%% The iterator is passed to the provided fun as `Fun(Iterator)', and is
+%% closed once the fun terminates.
+%% @equiv with_iterator(Tab, Fun, [])
+%% @end
 -spec with_iterator(ref_or_tab(), fun( (mrdb_iterator()) -> Res )) -> Res.
 with_iterator(Tab, Fun) ->
     with_iterator(Tab, Fun, []).
 
+%% @doc Create an iterator on table `Tab' with `ReadOptions' for the duration of `Fun'
+%%
+%% The iterator is passed to the provided fun as `Fun(Iterator)', and is
+%% closed once the fun terminates.
+%%
+%% The iterator respects `mnesia_rocksdb' metadata, so accesses through the iterator
+%% will return `{ok, Obj}' where  `Obj' is the complete decoded object.
+%% For rocksdb-level iterators, see {@link with_rdb_iterator/3}.
+%% @end
 -spec with_iterator(ref_or_tab(), fun( (mrdb_iterator()) -> Res ), read_options()) -> Res.
 with_iterator(Tab, Fun, Opts) ->
     R = ensure_ref(Tab),
@@ -714,6 +767,21 @@ insert(Tab, Obj0, Opts) ->
     Key = element(Pos, Obj),
     EncVal = encode_val(Obj, Ref),
     insert_(Ref, Key, encode_key(Key, Ref), EncVal, Obj, Opts).
+
+merge(Tab, Key, MergeOp) ->
+    merge(Tab, Key, MergeOp, []).
+
+merge(Tab, Key, MergeOp, Opts) ->
+    #{encoding := Enc} = Ref = ensure_ref(Tab),
+    case Enc of
+        {_, {value, term}} ->
+            merge_(Ref, Key, MergeOp, Opts);
+        _ ->
+            abort(badarg)
+    end.
+
+merge_(Ref, Key, MergeOp, Opts) ->
+    rdb_merge(Ref, encode_key(Key), MergeOp, Opts).
 
 validate_obj(Obj, #{mode := mnesia}) ->
     Obj;
@@ -1259,8 +1327,64 @@ select(Tab, Pat, Limit) when Limit == infinity; is_integer(Limit), Limit > 0 ->
     true = valid_limit(Limit),
     mrdb_select:select(ensure_ref(Tab), Pat, Limit).
 
+select_reverse(Tab, Pat) ->
+    select_reverse(Tab, Pat, infinity).
+
+select_reverse(Tab, Pat, Limit) when Limit == infinity; is_integer(Limit), Limit > 0 ->
+    true = valid_limit(Limit),
+    mrdb_select:select_reverse(ensure_ref(Tab), Pat, Limit).
+
 select(Cont) ->
     mrdb_select:select(Cont).
+
+%% @doc Produce a match specification for select(), supporting map-based match patterns
+%%
+%% Using record syntax in match patterns tends to conflict with type checking. This
+%% function offers an alternative approach, drawing on the fact that mnesia_rocksdb
+%% keeps the record name and attribute names readily available as persistent terms.
+%%
+%% When using the map-based representation, the match pattern is built by matching
+%% attribute names to map elements; any attribute not found in the map gets set to '_'.
+%% Thus, ```[{#balance{key = {Acct,'$1'},_='_'},[{'>=','$1',Height}],['$_']}]''' can be
+%% created as ```ms(balance,[{#{key => {Acct,'$1'}},[{'>=','$1',Height}],['$_']}])'''.
+%%
+%% This has the advantage over `ms_transform' that it can handle bound variables
+%% in the match pattern. The function works on all mnesia table types.
+%% @end
+-spec ms(ref_or_tab(), [{match_pattern(), [_], [_]}]) -> ets:match_spec().
+ms(Tab, Pat) ->
+    #{ attributes := Attrs
+     , record_name := RecName } = any_tab_props(Tab),
+    [{headpat(RecName, Attrs, Hd), Gs, Body}
+     || {Hd, Gs, Body} <- Pat].
+
+any_tab_props(Tab) ->
+    try mrdb_props(Tab)
+    catch
+        exit:{aborted,{bad_type,_}} ->
+            mnesia_props(Tab)
+    end.
+
+mrdb_props(Tab) ->
+    #{properties := Props} = get_ref(Tab),
+    Props.
+
+mnesia_props(Tab) ->
+    try mnesia_props_(Tab)
+    catch
+        exit:{aborted, _} ->
+            mnesia:abort({bad_type, Tab})
+    end.
+
+mnesia_props_(Tab) ->
+    #{ record_name => mnesia:table_info(Tab, record_name)
+     , attributes  => mnesia:table_info(Tab, attributes) }.
+
+headpat(RecName, Attrs, Hd) when is_map(Hd) ->
+    list_to_tuple([RecName | [maps:get(A, Hd, '_')
+                              || A <- Attrs]]);
+headpat(_, _, Hd) when is_tuple(Hd); is_atom(Hd) ->
+    Hd.
 
 clear_table(Tab) ->
     match_delete(Tab, '_').
@@ -1313,6 +1437,16 @@ fold(Tab, Fun, Acc, MatchSpec, Limit) ->
     true = valid_limit(Limit),
     mrdb_select:fold(ensure_ref(Tab), Fun, Acc, MatchSpec, Limit).
 
+fold_reverse(Tab, Fun, Acc) ->
+    fold_reverse(Tab, Fun, Acc, [{'_', [], ['$_']}]).
+
+fold_reverse(Tab, Fun, Acc, MatchSpec) ->
+    fold_reverse(Tab, Fun, Acc, MatchSpec, infinity).
+
+fold_reverse(Tab, Fun, Acc, MatchSpec, Limit) ->
+    true = valid_limit(Limit),
+    mrdb_select:fold_reverse(ensure_ref(Tab), Fun, Acc, MatchSpec, Limit).
+
 rdb_fold(Tab, Fun, Acc, Prefix) when is_function(Fun, 3)
                                    , is_binary(Prefix) ->
     rdb_fold(Tab, Fun, Acc, Prefix, infinity).
@@ -1321,6 +1455,15 @@ rdb_fold(Tab, Fun, Acc, Prefix, Limit) when is_function(Fun, 3)
                                           , is_binary(Prefix) ->
     true = valid_limit(Limit),
     mrdb_select:rdb_fold(ensure_ref(Tab), Fun, Acc, Prefix, Limit).
+
+rdb_fold_reverse(Tab, Fun, Acc, Prefix) when is_function(Fun, 3)
+                                         , is_binary(Prefix) ->
+    rdb_fold_reverse(Tab, Fun, Acc, Prefix, infinity).
+
+rdb_fold_reverse(Tab, Fun, Acc, Prefix, Limit) when is_function(Fun, 3)
+                                                , is_binary(Prefix) ->
+    true = valid_limit(Limit),
+    mrdb_select:rdb_fold_reverse(ensure_ref(Tab), Fun, Acc, Prefix, Limit).
 
 valid_limit(L) ->
     case L of
@@ -1333,15 +1476,7 @@ valid_limit(L) ->
     end.
 
 write_info(Tab, K, V) ->
-    R = ensure_ref(Tab),
-    Alias = case R of
-                #{type := standalone, vsn := 1, alias := A} = TRef ->
-                    %% Also write on legacy info format
-                    write_info_standalone(TRef, K, V),
-                    A;
-                #{alias := A} ->
-                    A
-            end,
+    #{alias := Alias} = ensure_ref(Tab),
     write_info_(ensure_ref({admin, Alias}), Tab, K, V).
 
 write_info_(#{} = R, Tab, K, V) ->
@@ -1358,13 +1493,8 @@ read_info(Tab, K) ->
 read_info(Tab, K, Default) when K==size; K==memory ->
     read_direct_info_(ensure_ref(Tab), K, Default);
 read_info(Tab, K, Default) ->
-    #{alias := Alias} = R = ensure_ref(Tab),
-    case R of
-        #{type := standalone, vsn := 1} = TRef ->
-            read_info_standalone(TRef, K, Default);
-        #{alias := Alias} ->
-            mnesia_rocksdb_admin:read_info(Alias, Tab, K, Default)
-    end.
+    #{alias := Alias} = ensure_ref(Tab),
+    mnesia_rocksdb_admin:read_info(Alias, Tab, K, Default).
 
 read_direct_info_(R, memory, _Def) ->
     get_property(R, <<"rocksdb.total-sst-files-size">>, integer, 0);
@@ -1387,26 +1517,6 @@ get_property(#{db_ref := R, cf_handle := CfH}, Prop, Type, Default) ->
 
 %%rocksdb_boolean(<<"1">>) -> true;
 %%rocksdb_boolean(<<"0">>) -> false.
-
-write_info_standalone(#{} = R, K, V) ->
-    EncK = <<?INFO_TAG, (encode_key(K, sext))/binary>>,
-    EncV = term_to_binary(V),
-    rdb_put(R, EncK, EncV, write_opts(R, [])).
-
-read_info_standalone(#{} = R, K, Default) ->
-    EncK = <<?INFO_TAG, (encode_key(K, sext))/binary>>,
-    get_info_res(rdb_get(R, EncK, read_opts(R, [])), Default).
-
-get_info_res(Res, Default) ->
-    case Res of
-        not_found ->
-            Default;
-        {ok, Bin} ->
-            %% no fancy tricks when encoding/decoding info values
-            binary_to_term(Bin);
-        {error, E} ->
-            error(E)
-    end.
 
 %% insert_bag_v2(Ref, K, V, Opts) ->
 %%     rdb_merge(Ref, K, {list_append, [V]}

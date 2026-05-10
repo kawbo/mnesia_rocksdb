@@ -48,14 +48,18 @@
 -record(st, {}).
 -define(KEYS, [a,b,c]).
 
+-dialyzer({no_return, [basic_test_/0, test/1, prop_seq/0]}).
+
 basic_test_() ->
     {timeout, 60000, [fun() -> test(100) end]}.
 
+-dialyzer({no_opaque, test/1}).
 test(N) ->
     setup_mnesia(),
     true = proper:quickcheck(?MODULE:prop_seq(), N),
     ok.
 
+-dialyzer({no_opaque, prop_seq/0}).
 prop_seq() ->
     ?FORALL(Cmds, proper_statem:commands(?MODULE),
             begin

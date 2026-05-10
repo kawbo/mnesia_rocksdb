@@ -78,7 +78,7 @@
              | {add_aliases, [alias()]}
              | {write_table_property, tabname(), tuple()}
              | {remove_aliases, [alias()]}
-             | {migrate, [{tabname(), map()}], rpt()}
+             | {migrate, [tabname() | {tabname(), map()}], rpt()}
              | {prep_close, table()}
              | {close_table, table()}
              | {clear_table, table() | cf() }.
@@ -250,31 +250,6 @@ get_info_res(Res, Default) ->
             error(E)
     end.
 
-%% Admin info: metadata written by the admin proc to keep track of
-%% the derived status of tables (such as detected version and encoding
-%% of existing standalone tables.)
-%%
-write_admin_info(K, V, Alias, Name) ->
-    mrdb:rdb_put(get_ref({admin, Alias}),
-                 admin_info_key(K, Name),
-                 term_to_binary(V)).
-
-read_admin_info(K, Alias, Name) ->
-    EncK = admin_info_key(K, Name),
-    case mrdb:rdb_get(get_ref({admin,Alias}), EncK) of
-        {ok, Bin} ->
-            {ok, binary_to_term(Bin)};
-        _ ->
-            error
-    end.
-
-delete_admin_info(K, Alias, Name) ->
-    EncK = admin_info_key(K, Name),
-    mrdb:rdb_delete(get_ref({admin, Alias}), EncK).
-
-admin_info_key(K, Name) ->
-    mnesia_rocksdb_lib:encode_key({admin_info, Name, K}, sext).
-
 %% Table metadata info maintained by users
 %%
 write_info(Alias, Tab, K, V) ->
@@ -285,7 +260,6 @@ write_info_(Ref, Tab, K, V) ->
 
 write_info_encv(Ref, Tab, K, V) ->
     EncK = mnesia_rocksdb_lib:encode_key({info,Tab,K}, sext),
-    maybe_write_standalone_info(Ref, K, V),
     mrdb:rdb_put(Ref, EncK, V, []).
 
 delete_info(Alias, Tab, K) ->
@@ -293,36 +267,21 @@ delete_info(Alias, Tab, K) ->
 
 delete_info_(Ref, Tab, K) ->
     EncK = mnesia_rocksdb_lib:encode_key({info, Tab, K}, sext),
-    maybe_delete_standalone_info(Ref, K),
     mrdb:rdb_delete(Ref, EncK, []).
-
-maybe_write_standalone_info(Ref, K, V) ->
-    case Ref of
-        #{type := standalone, vsn := 1, db_ref := DbRef} ->
-            EncK = mnesia_rocksdb_lib:encode_key(K, sext),
-            Key = <<?INFO_TAG, EncK/binary>>,
-            EncV = mnesia_rocksdb_lib:encode_val(V, term),
-            rocksdb:put(DbRef, Key, EncV, []);
-        _ ->
-            ok
-    end.
-
-maybe_delete_standalone_info(Ref, K) ->
-    case Ref of
-        #{type := standalone, vsn := 1, db_ref := DbRef} ->
-            EncK = mnesia_rocksdb_lib:encode_key(K, sext),
-            Key = <<?INFO_TAG, EncK/binary>>,
-            rocksdb:delete(DbRef, Key, []);
-        _ ->
-            ok
-    end.
 
 write_table_property(Alias, Tab, Prop) when is_tuple(Prop), size(Prop) >= 1 ->
     call(Alias, {write_table_property, Tab, Prop}).
 
+-spec migrate_standalone(alias(), Tabs) -> Res when
+      Tabs :: [tabname() | {tabname(),map()}],
+      Res  :: [{tabname(), {ok,any()} | {error, any()}}].
 migrate_standalone(Alias, Tabs) ->
     migrate_standalone(Alias, Tabs, undefined).
 
+-spec migrate_standalone(alias(), Tabs, Rpt) -> Res when
+      Tabs :: [tabname() | {tabname(),map()}],
+      Rpt  :: 'undefined' | pid() | atom(),
+      Res  :: [{tabname(), {ok,any()} | {error, any()}}].
 migrate_standalone(Alias, Tabs, Rpt0) ->
     Rpt = case Rpt0 of
               undefined -> undefined;
@@ -813,10 +772,10 @@ create_table_from_trec(Alias, Name, #{type := column_family} = TRec,
         false ->
             create_table_as_cf(Alias, Name, TRec#{db_ref => DbRef}, St);
         {false, MP} ->
-            create_table_as_standalone(Alias, Name, true, MP, TRec, St);
+            create_table_as_standalone(Alias, Name, MP, TRec, St);
         {true, MP} ->
             ?log(debug, "will create ~p as standalone and migrate", [Name]),
-            case create_table_as_standalone(Alias, Name, false, MP, TRec, St) of
+            case create_table_as_standalone(Alias, Name, MP, TRec, St) of
                 {ok, OldTRec, _} ->
                     ?log(info, "Migrating ~p to column family", [Name]),
                     create_cf_and_migrate(Alias, Name, OldTRec, TRec, Backend, undefined, St);
@@ -825,8 +784,8 @@ create_table_from_trec(Alias, Name, #{type := column_family} = TRec,
             end
    end;
 create_table_from_trec(Alias, Name, #{type := standalone} = TRec, _, St) ->
-    {Exists, MP} = table_exists_as_standalone(Name),
-    create_table_as_standalone(Alias, Name, Exists, MP, TRec, St).
+    {_, MP} = table_exists_as_standalone(Name),
+    create_table_as_standalone(Alias, Name, MP, TRec, St).
 
 create_cf_and_migrate(Alias, Name, OldTRec, TRec, #{db_ref := DbRef}, Rpt, St) ->
     ?log(debug, "Migrate to cf (~p)", [Name]),
@@ -1106,29 +1065,12 @@ table_exists_as_standalone(Name) ->
     end,
     {Exists, MP}.
 
-create_table_as_standalone(Alias, Name, Exists, MP, TRec, St) ->
-    case create_table_as_standalone_(Alias, Name, Exists, MP, TRec, St) of
-        {ok, #{type := standalone, vsn := Vsn1,
-               encoding := Enc1} = Cf, _St1} = Ok ->
-            write_admin_info(standalone_vsn_and_enc, {Vsn1, Enc1},
-                             Alias, Name),
-            case Vsn1 of
-                1 ->
-                    load_info(Alias, Name, Cf);
-                _ ->
-                    skip
-            end,
-            Ok;
-        Other ->
-            Other
-    end.
-
-create_table_as_standalone_(Alias, Name, Exists, MP, TRec, St) ->
+create_table_as_standalone(Alias, Name, MP, TRec, St) ->
     Vsn = check_version(TRec),
     TRec1 = TRec#{vsn => Vsn, encoding => get_encoding(Vsn, TRec)},
-    do_open_standalone(true, Alias, Name, Exists, MP, TRec1, St).
+    do_open_standalone(true, Alias, Name, MP, TRec1, St).
 
-do_open_standalone(CreateIfMissing, Alias, Name, Exists, MP, TRec0,
+do_open_standalone(CreateIfMissing, Alias, Name, MP, TRec0,
                    #st{standalone = Ts} = St) ->
     Opts = rocksdb_opts_from_trec(TRec0),
     case open_db_(MP, Alias, Opts, [], CreateIfMissing, Name, St) of
@@ -1138,145 +1080,23 @@ do_open_standalone(CreateIfMissing, Alias, Name, Exists, MP, TRec0,
             DbRec1 = DbRec#{ cfs => CfNames,
                              mountpoint => MP },
             TRec = maps:merge(TRec0, DbRec#{type => standalone}),
-            TRec1 = guess_table_vsn_and_encoding(Exists, TRec),
-            {ok, TRec1, St#st{standalone = Ts#{{Alias, Name} => DbRec1}}};
+            {ok, TRec, St#st{standalone = Ts#{{Alias, Name} => DbRec1}}};
         {error, _} = Err ->
             ?log(debug, "open_db error: ~p", [Err]),
             Err
-    end.
-
-%% When opening a standalone table, chances are it's a legacy table
-%% where legacy encoding is already in place. We try to read the
-%% first object and apply legacy encoding. If successful, we set
-%% legacy encoding in the TRec. If we migrate the data to a column
-%% family, we should apply the defined encoding for the cf.
-%%
-%% The first object can either be an info object (in the legacy case)
-%% or a data object, with a sext-encoded key, and a term_to_binary-
-%% encoded object as value, where the key position is set to [].
-%% The info objects would be sext-encoded key + term-encoded value.
-guess_table_vsn_and_encoding(false, TRec) ->
-    TRec;
-guess_table_vsn_and_encoding(true, #{properties := #{attributes := As},
-                                     alias := Alias, name := Name} = R) ->
-    case read_admin_info(standalone_vsn_and_enc, Alias, Name) of
-        {ok, {V, E}} ->
-            R#{vsn => V, encoding => E};
-        error ->
-            R1 = set_default_guess(R),
-            mrdb:with_rdb_iterator(
-              R1, fun(I) ->
-                          guess_table_vsn_and_encoding_(
-                            mrdb:rdb_iterator_move(I, first), I, As, R1)
-                  end)
-    end.
-
-set_default_guess(#{type := standalone} = R) ->
-    case application:get_env(mnesia_rocksdb, standalone_default_vsn, ?VSN) of
-        1 ->
-            R#{vsn => 1, encoding => {sext, {object, term}}};
-        V ->
-            R#{vsn => V}
-    end.
-
-guess_table_vsn_and_encoding_({ok, K, V}, _I, As, R) ->
-    Arity = length(As) + 1,
-    case K of
-        <<?INFO_TAG, EncK/binary>> ->
-            try _ = {mnesia_rocksdb_lib:decode(EncK, sext),
-                     mnesia_rocksdb_lib:decode(V, term)},
-                %% This is a vsn 1 standalone table
-                R#{vsn => 1, encoding => {sext, {object, term}}}
-            catch
-                error:_ ->
-                    R
-            end;
-        _ ->
-            Enc = guess_obj_encoding(K, V, Arity),
-            R#{encoding => Enc}
-   end;
-guess_table_vsn_and_encoding_(_Other, _, _, R) ->
-    R.
-
-guess_obj_encoding(K, V, Arity) ->
-    {guess_key_encoding(K), guess_val_encoding(V, Arity)}.
-
-guess_encoding(Bin) ->
-    try {sext, sext:decode(Bin)}
-    catch
-        error:_ ->
-            try {term, binary_to_term(Bin)}
-            catch
-                error:_ -> raw
-            end
-    end.
-
-guess_key_encoding(Bin) ->
-    case guess_encoding(Bin) of
-        raw -> raw;
-        {Enc, _} -> Enc
-    end.
-
-guess_val_encoding(Bin, Arity) ->
-    case guess_encoding(Bin) of
-        raw -> {value, raw};
-        {Enc, Term} ->
-            if is_tuple(Term), size(Term) == Arity,
-               element(2, Term) == [] ->
-                   {object, Enc};
-               true ->
-                   {value, Enc}
-            end
     end.
 
 %% This is slightly different from `rocksdb:is_empty/1`, since it allows
 %% for the presence of some metadata, and still considers it empty if there
 %% is no user data.
 table_is_empty(#{} = DbRec) ->
-    Start = iterator_data_start(DbRec),
     mrdb:with_rdb_iterator(
       DbRec, fun(I) ->
-                     case mrdb:rdb_iterator_move(I, Start) of
+                     case mrdb:rdb_iterator_move(I, first) of
                          {ok, _, _} -> false;
                          _          -> true
                      end
              end).
-
-iterator_data_start(#{vsn := 1}) -> <<?DATA_START>>;
-iterator_data_start(_)           -> first.
-
-load_info(Alias, Name, Cf) ->
-    ARef = get_ref({admin, Alias}),
-    mrdb:with_rdb_iterator(
-      Cf, fun(I) ->
-                  load_info_(rocksdb:iterator_move(I, first), I, ARef, Name)
-          end).
-
-load_info_(Res, I, ARef, Tab) ->
-    case Res of
-        {ok, << ?INFO_TAG, K/binary >>, V} ->
-            DecK = mnesia_rocksdb_lib:decode_key(K),
-            case read_info_(ARef, Tab, DecK, undefined) of
-                undefined ->
-                    write_info_encv(ARef, Tab, DecK, V);
-                <<131,_/binary>> = Value ->
-                    %% Due to a previous bug, info values could be double-encoded with binary_to_term()
-                    try binary_to_term(Value) of
-                        _DecVal ->
-                            %% We haven't been storing erlang-term encoded data as info,
-                            %% so assume this is double-encoded and correct
-                            write_info_encv(ARef, Tab, DecK, Value)
-                    catch
-                        error:_ ->
-                            skip
-                    end;
-                _ ->
-                    skip
-            end,
-            load_info_(rocksdb:iterator_move(I, next), I, ARef, Tab);
-        _ ->
-            ok
-    end.
 
 check_version(TRec) ->
     user_property(mrdb_version, TRec, ?VSN).
@@ -1535,10 +1355,9 @@ filter_opts(Defaults, Opts, Allowed) ->
         Filtered
     ).
 
-
 rocksdb_open(MP, Opts, CFs) ->
     %% rocksdb:open(MP, Opts, CFs),
-    mnesia_rocksdb_lib:open_rocksdb(MP, Opts, CFs).
+    mnesia_rocksdb_lib:open_rocksdb(MP, open_opts(Opts), CFs).
 
 is_open(Alias, #st{backends = Bs}) ->
     case maps:find(Alias, Bs) of
@@ -1690,7 +1509,6 @@ close_and_delete_standalone(#{alias := Alias,
     case get_table_mountpoint(Alias, Name, St) of
         {ok, MP} ->
             close_and_delete(DbRef, MP),
-            delete_admin_info(standalone_vsn_and_enc, Alias, Name),
             St#st{standalone = maps:remove({Alias,Name}, St#st.standalone)};
         error ->
             St
