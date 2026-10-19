@@ -79,20 +79,20 @@ cleanup() ->
     os:cmd("rm *.BUP").
 
 mods(0) ->
-    [];
-mods(1) ->
-    [
-     {l, mnesia_rocksdb},
-     {g, rocksdb}
-    ];
-mods(2) ->
-    [
-     %% {l, mnesia_monitor},
-     {g, mnesia_rocksdb},
-     {l, mnesia_bup},
-     {g, mnesia_lib},
-     {g, mnesia_schema},
-     %% {g, mnesia_loader},
-     {g, mnesia_index},
-     {l, mnesia_tm}
-    ].
+    [].
+%% mods(1) ->
+%%     [
+%%      {l, mnesia_rocksdb},
+%%      {g, rocksdb}
+%%     ];
+%% mods(2) ->
+%%     [
+%%      %% {l, mnesia_monitor},
+%%      {g, mnesia_rocksdb},
+%%      {l, mnesia_bup},
+%%      {g, mnesia_lib},
+%%      {g, mnesia_schema},
+%%      %% {g, mnesia_loader},
+%%      {g, mnesia_index},
+%%      {l, mnesia_tm}
+%%     ].
