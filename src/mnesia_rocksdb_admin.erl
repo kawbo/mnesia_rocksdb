@@ -360,9 +360,12 @@ get_aliases() ->
     %% Return a list of registered aliases paired with alias-specific options
     [{rocksdb_copies, []}].
 
+%% Options for the admin db of every alias, i.e. the db shared by all column family
+%% tables. DB-level rocksdb options (max_open_files, paranoid_checks, background threads,
+%% statistics, ...) cannot be set per column family, so this is the only place they can
+%% be configured. CF-level options in the list apply to the admin db's own column families.
 default_opts() ->
-    %% TODO: make this configurable
-    [].
+    application:get_env(mnesia_rocksdb, default_rocksdb_opts, []).
 
 alias_opts(Alias) ->
     %% TODO: User should have a way to configure rocksdb options for the admin db
@@ -378,9 +381,8 @@ maybe_load_admin_db({Alias, Opts}, #st{backends = Bs} = St) ->
             try_load_admin_db(Alias, Opts, St)
     end.
 
-try_load_admin_db(Alias, AliasOpts, #st{ backends = Bs
-                                       , default_opts = DefaultOpts} = St) ->
-    case load_admin_db(Alias, AliasOpts ++ DefaultOpts, St) of
+try_load_admin_db(Alias, AliasOpts, #st{ backends = Bs } = St) ->
+    case load_admin_db(Alias, AliasOpts ++ default_opts(), St) of
         {ok, #{cf_info := CfI0, mountpoint := MP} = AdminDb} ->
             %% We need to store the persistent ref explicitly here,
             %% since mnesia knows nothing of our admin table.

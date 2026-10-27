@@ -11,7 +11,8 @@
         , end_per_group/2
         , init_per_testcase/2
         , end_per_testcase/2
-        ]).
+                , admin_db_opens_with_default_rocksdb_opts/1
+]).
 
 -export([ encoding_sext_attrs/1
         , encoding_binary_binary/1
@@ -46,7 +47,9 @@ groups() ->
     [
       {all_tests, [sequence], [ {group, checks}
                               , {group, mrdb}
-                              , {group, counters}]}
+                              , {group, counters}
+                              , {group, options}]}
+    , {options, [sequence], [ admin_db_opens_with_default_rocksdb_opts ]}
                               %% , error_handling ]}
     , {checks, [sequence], [ encoding_sext_attrs
                            , encoding_binary_binary
@@ -83,9 +86,16 @@ init_per_group(G, Config) when G==mrdb
     ok = mnesia_rocksdb_tlib:start_mnesia(reset),
     Config;
 
+init_per_group(options, Config) ->
+    ok = application:set_env(mnesia_rocksdb, default_rocksdb_opts, [{max_open_files, 123}]),
+    mnesia:stop(),
+    ok = mnesia_rocksdb_tlib:start_mnesia(reset),
+    Config;
 init_per_group(_, Config) ->
     Config.
 
+end_per_group(options, _Config) ->
+    ok = application:unset_env(mnesia_rocksdb, default_rocksdb_opts);
 end_per_group(_, _Config) ->
     ok.
 
@@ -818,3 +828,11 @@ check_stats(Alias) ->
     Stats = mrdb_stats:get(Alias),
     ct:log("Stats: ~p", [Stats]),
     Stats.
+
+%% DB-level rocksdb options cannot be carried by a column family table, so the admin db
+%% (shared by every column family of the alias) is opened with the configured defaults.
+admin_db_opens_with_default_rocksdb_opts(_Config) ->
+    Log = filename:join(mnesia_rocksdb_lib:data_mountpoint({admin, rdb}), "LOG"),
+    {ok, Contents} = file:read_file(Log),
+    {match, _} = re:run(Contents, <<"Options.max_open_files: 123">>),
+    ok.
