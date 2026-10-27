@@ -13,6 +13,7 @@
         , end_per_testcase/2
                 , admin_db_opens_with_default_rocksdb_opts/1
         , direct_access_column_family_table/1
+        , column_families_share_one_block_cache/1
 ]).
 
 -export([ encoding_sext_attrs/1
@@ -51,7 +52,8 @@ groups() ->
                               , {group, counters}
                               , {group, options}]}
     , {options, [sequence], [ admin_db_opens_with_default_rocksdb_opts
-                            , direct_access_column_family_table ]}
+                            , direct_access_column_family_table
+                            , column_families_share_one_block_cache ]}
                               %% , error_handling ]}
     , {checks, [sequence], [ encoding_sext_attrs
                            , encoding_binary_binary
@@ -850,4 +852,24 @@ direct_access_column_family_table(_Config) ->
     ok = mrdb:insert(T, {T, 2, two}),
     [{T, 1, one}] = mnesia:dirty_read(T, 1),
     [{T, 2, two}] = mnesia:dirty_read(T, 2),
+    ok.
+
+%% block_cache_size names one cache for the whole node: every column family (and every
+%% standalone db) opened with the same size shares it, instead of each allocating its own.
+column_families_share_one_block_cache(_Config) ->
+    Opts = [{user_properties, [{rocksdb_opts, [{block_based_table_options, [{block_cache_size, 8388608}]}]}]}],
+    [{atomic, ok} = mnesia:create_table(T, [{rdb, [node()]}, {attributes, [k, v]} | Opts]) || T <- [cache_a, cache_b, cache_c]],
+    [ok = mnesia:dirty_write({cache_a, N, {payload, N, lists:duplicate(50, N)}}) || N <- lists:seq(1, 2000)],
+    #{db_ref := Db, cf_handle := CfA} = mrdb:get_ref(cache_a),
+    ok = rocksdb:flush(Db, CfA, [{wait, true}]),
+    [[_] = mnesia:dirty_read(cache_a, N) || N <- lists:seq(1, 2000)],
+    Usage = fun(T) ->
+        #{db_ref := D, cf_handle := Cf} = mrdb:get_ref(T),
+        {ok, Bytes} = rocksdb:get_property(D, Cf, <<"rocksdb.block-cache-usage">>),
+        binary_to_integer(Bytes)
+    end,
+    Usages = [{T, Usage(T)} || T <- [cache_a, cache_b, cache_c]],
+    ct:log("block cache usage seen through each table: ~p", [Usages]),
+    true = Usage(cache_a) > 0,
+    [_Shared] = lists:usort([U || {_T, U} <- Usages]),
     ok.

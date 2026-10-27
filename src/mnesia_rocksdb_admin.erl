@@ -1438,8 +1438,10 @@ may_enable_db_statistics(Opts) ->
             Opts
     end.
 
-% for support native rocksdb block cache we have to re-init new cache reference everytime
-% when we restart
+% block_cache_size names one native cache for the whole node: every column family and
+% every standalone db opened with the same size shares it, so the size is the node's
+% total budget rather than a per-table one. The cache is kept in a persistent term, so it
+% survives mnesia restarts within the VM and is created again only with the VM.
 
 may_re_init_new_native_block_cache(Opts) ->
     BBTOptions = proplists:get_value(block_based_table_options, Opts, []),
@@ -1450,15 +1452,25 @@ may_re_init_new_native_block_cache(Opts) ->
         undefined
     )} of
         {undefined, CacheSize} when CacheSize =/= undefined ->
-            {ok, NewCacheRef} = rocksdb:new_cache(lru, CacheSize),
             lists:keyreplace(
               block_based_table_options,
               1,
               Opts,
-              {block_based_table_options, [{block_cache, NewCacheRef} | BBTOptions]}
+              {block_based_table_options, [{block_cache, shared_block_cache(CacheSize)} | BBTOptions]}
              );
         _NoMatch ->
             Opts
+    end.
+
+shared_block_cache(CacheSize) ->
+    Key = {?MODULE, block_cache, CacheSize},
+    case persistent_term:get(Key, undefined) of
+        undefined ->
+            {ok, CacheRef} = rocksdb:new_cache(lru, CacheSize),
+            persistent_term:put(Key, CacheRef),
+            CacheRef;
+        CacheRef ->
+            CacheRef
     end.
 
 admin_cfs(Tab, CFOpts) when is_atom(Tab) -> [ {tab_to_cf_name(Tab), CFOpts} ];
