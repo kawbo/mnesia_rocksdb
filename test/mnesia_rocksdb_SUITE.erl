@@ -12,6 +12,7 @@
         , init_per_testcase/2
         , end_per_testcase/2
                 , admin_db_opens_with_default_rocksdb_opts/1
+        , direct_access_column_family_table/1
 ]).
 
 -export([ encoding_sext_attrs/1
@@ -49,7 +50,8 @@ groups() ->
                               , {group, mrdb}
                               , {group, counters}
                               , {group, options}]}
-    , {options, [sequence], [ admin_db_opens_with_default_rocksdb_opts ]}
+    , {options, [sequence], [ admin_db_opens_with_default_rocksdb_opts
+                            , direct_access_column_family_table ]}
                               %% , error_handling ]}
     , {checks, [sequence], [ encoding_sext_attrs
                            , encoding_binary_binary
@@ -835,4 +837,17 @@ admin_db_opens_with_default_rocksdb_opts(_Config) ->
     Log = filename:join(mnesia_rocksdb_lib:data_mountpoint({admin, rdb}), "LOG"),
     {ok, Contents} = file:read_file(Log),
     {match, _} = re:run(Contents, <<"Options.max_open_files: 123">>),
+    ok.
+
+%% rocksdb_access_type is a user property like any other; a column family table must
+%% honour it the same way a standalone table does.
+direct_access_column_family_table(_Config) ->
+    T = direct_cf,
+    {atomic, ok} = mnesia:create_table(T, [{rdb, [node()]}, {attributes, [k, v]},
+                                           {user_properties, [{rocksdb_access_type, direct}]}]),
+    #{type := column_family, access_type := direct} = mrdb:get_ref(T),
+    ok = mnesia:dirty_write({T, 1, one}),
+    ok = mrdb:insert(T, {T, 2, two}),
+    [{T, 1, one}] = mnesia:dirty_read(T, 1),
+    [{T, 2, two}] = mnesia:dirty_read(T, 2),
     ok.

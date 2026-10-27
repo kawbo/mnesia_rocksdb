@@ -1136,10 +1136,9 @@ set_access_type(R) ->
     R#{access_type => access_type_(R)}.
 
 access_type_(#{semantics := bag}) -> legacy;
-access_type_(#{properties := #{user_properties := #{rocksdb_access_type := T}}}) ->
-    valid_access_type(T);
-access_type_(_) ->
-    valid_access_type(application:get_env(mnesia_rocksdb, default_access_type, legacy)).
+access_type_(TRec) ->
+    Default = application:get_env(mnesia_rocksdb, default_access_type, legacy),
+    valid_access_type(user_property(rocksdb_access_type, TRec, Default)).
 
 valid_access_type(T) when T==legacy; T==direct -> T;
 valid_access_type(T) ->
