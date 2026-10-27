@@ -609,7 +609,7 @@ handle_load_table_req(Alias, Name, TRec, Backend, St) ->
 
 %% if an index table has been created or deleted, make sure the main
 %% ref reflects it.
-maybe_update_main(Alias, {Main, index, I}, Op, St) ->
+maybe_update_main(Alias, {Main, index, I} = Name, Op, St) ->
     case find_cf_from_state(Alias, Main, St) of
         {ok, #{properties := #{index := Index} = Props} = CfM} ->
             case {Op, lists:member(I, Index)} of
@@ -619,10 +619,18 @@ maybe_update_main(Alias, {Main, index, I}, Op, St) ->
                     maybe_update_pt(Main, CfM1),
                     update_cf(Alias, Main, CfM1, St);
                 {create, _} ->
-                    %% Due to a previous bug, this marker might linger
-                    %% In any case, it mustn't be there for a newly created index
-                    delete_info(Alias, Main, {index_consistent, I}),
-                    St;
+                    %% mnesia calls create_table for the index table on every load, before
+                    %% load_table, and a standalone index is not yet registered in the state
+                    %% at that point. Only a genuinely new index must lose the consistency
+                    %% marker (due to a previous bug, it might linger); an index that already
+                    %% exists on disk keeps it, or every restart would rebuild the index.
+                    case table_exists_as_standalone(Name) of
+                        {true, _MountPoint} ->
+                            St;
+                        {false, _MountPoint} ->
+                            delete_info(Alias, Main, {index_consistent, I}),
+                            St
+                    end;
                 _ ->
                     St
             end;

@@ -48,6 +48,8 @@
         , plugin_rdb_ordered/1
         , plugin_rdb_none/1
         , index_iterator/1
+        , standalone_index_survives_restart/1
+        , delete_indexes_standalone/1
         ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -93,7 +95,11 @@ all() ->
 
 groups() ->
     [
-      {all_tests, [sequence], [ {group, mgmt}, {group, access}, {group, plugin} ]}
+      {all_tests, [sequence], [ {group, mgmt}, {group, access}, {group, plugin}, {group, restart} ]}
+    , {restart, [sequence], [
+                              standalone_index_survives_restart
+                            , delete_indexes_standalone
+                            ]}
     , {mgmt, [sequence], [
                            create_bag_index
                          , create_ordered_index
@@ -270,6 +276,57 @@ create_ordered_index(_Config) ->
     {atomic, ok} =
         mnesia:create_table(oi, [{rdb, [node()]}, {index, [{val, ordered}]}]),
     ok.
+
+%% A restart must find the index of a standalone table consistent: the marker written when
+%% the index was built has to survive the create_table call mnesia makes for the index table
+%% on every load, so the table is not rescanned.
+standalone_index_survives_restart(_Config) ->
+    T = ?TAB(si),
+    {atomic, ok} = mnesia:create_table(T, [{rdb, [node()]}, {attributes, [k, v]}, {index, [{v, ordered}]},
+                                           {user_properties, [{rocksdb_standalone, true}]}]),
+    ok = mrdb:insert(T, {T, a, 1}),
+    IxTag = {T, index, {3, ordered}},
+    true = mnesia_rocksdb:is_index_consistent(rdb, IxTag),
+    stopped = mnesia:stop(),
+    1 = erlang:trace_pattern({mnesia_rocksdb, index_is_consistent, 3}, true, [global]),
+    _ = erlang:trace(new_processes, true, [call]),
+    ok = mnesia:start(),
+    ok = mnesia:wait_for_tables([T], 10000),
+    _ = erlang:trace(new_processes, false, [call]),
+    1 = erlang:trace_pattern({mnesia_rocksdb, index_is_consistent, 3}, false, [global]),
+    Rebuilds = collect_rebuild_marks([]),
+    ct:log("index_is_consistent calls during start: ~p", [Rebuilds]),
+    [] = [Call || {_Alias, _IxTag, false} = Call <- Rebuilds],
+    true = mnesia_rocksdb:is_index_consistent(rdb, IxTag),
+    [{1, {T, a, 1}}] = mrdb_index:rev_fold(T, v, fun ix_fold_acc/3, []),
+    ok.
+
+%% Dropping and re-adding an index of a standalone table must build the new index from the
+%% current rows: a stale consistency marker from the dropped index must not be reused.
+delete_indexes_standalone(_Config) ->
+    T = ?TAB(ts),
+    {atomic, ok} = mnesia:create_table(T, [{rdb, [node()]}, {attributes, [k, a, b]},
+                                           {user_properties, [{rocksdb_standalone, true}]}]),
+    ok = mrdb:insert(T, {T, a, 1, 1}),
+    ok = mrdb:insert(T, {T, b, 1, 2}),
+    {atomic, ok} = mnesia:add_table_index(T, a),
+    [{1, {T,a,1,1}}, {1, {T,b,1,2}}] =
+        mrdb_index:rev_fold(T, a, fun ix_fold_acc/3, []),
+    {atomic, ok} = mnesia:del_table_index(T, a),
+    ok = mrdb:delete(T, b),
+    ok = mrdb:insert(T, {T, c, 2, 3}),
+    {atomic, ok} = mnesia:add_table_index(T, a),
+    [{1, {T,a,1,1}}, {2, {T,c,2,3}}] =
+        mrdb_index:rev_fold(T, a, fun ix_fold_acc/3, []),
+    ok.
+
+collect_rebuild_marks(Acc) ->
+    receive
+        {trace, _Pid, call, {mnesia_rocksdb, index_is_consistent, [Alias, IxTag, Bool]}} ->
+            collect_rebuild_marks([{Alias, IxTag, Bool} | Acc])
+    after 200 ->
+        lists:reverse(Acc)
+    end.
 
 add_indexes(_Config) ->
     T = ?TAB(t1),
