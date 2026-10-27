@@ -552,6 +552,22 @@ handle_req(Alias, {clear_table, Name}, Backend, #st{} = St) ->
             St1 = update_cf(Alias, Name, Cf1, St),
             put_pt(Name, Cf1),
             {reply, ok, St1};
+        {ok, #{ status := open
+              , type := standalone
+              , db_ref := DbRef } = TRec} ->
+            %% A standalone table is its own db: clearing it is destroying the db and
+            %% opening a fresh one at the same mountpoint.
+            {ok, MP} = get_table_mountpoint(Alias, Name, St),
+            close_and_delete(DbRef, MP),
+            case do_open_standalone(true, Alias, Name, MP, TRec, St) of
+                {ok, TRec1, St1} ->
+                    TRec2 = TRec1#{status => open},
+                    St2 = update_cf(Alias, Name, TRec2, St1),
+                    put_pt(Name, TRec2),
+                    {reply, ok, St2};
+                {error, _} = Error ->
+                    {reply, Error, St}
+            end;
         _ ->
             {reply, {error, not_found}, St}
     end;
@@ -1296,7 +1312,7 @@ do_delete_table(Alias, Name, Backend, #st{} = St) ->
                     {ok, delete_cf(Alias, Name, St)};
                 #{type := standalone} = R ->
                     St1 = close_and_delete_standalone(R, St),
-                    {ok, St1}
+                    {ok, delete_cf(Alias, Name, St1)}
             end;
         error ->
             {error, not_found}
