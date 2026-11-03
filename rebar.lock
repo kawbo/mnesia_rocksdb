@@ -2,8 +2,8 @@
 [{<<"hut">>,{pkg,<<"hut">>,<<"1.4.0">>},0},
  {<<"parse_trans">>,{pkg,<<"parse_trans">>,<<"3.4.2">>},0},
  {<<"rocksdb">>,
-  {git,"https://github.com/emqx/erlang-rocksdb.git",
-       {ref,"d695c6ee9dd27bfe492ed4e24c72ad20ab0d770b"}},
+  {git,"https://github.com/kawbo/erlang-rocksdb.git",
+       {ref,"30a0ed2d8551b9f86915f165d3ddd73b629ab10b"}},
   0},
  {<<"sext">>,{pkg,<<"sext">>,<<"1.8.0">>},0}]}.
 [

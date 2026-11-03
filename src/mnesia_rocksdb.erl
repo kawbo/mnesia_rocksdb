@@ -198,6 +198,9 @@ register() ->
 %% The function used to register a plugin is `mnesia_schema:add_backend_type(Alias, Module)'
 %% where `Module' implements a backend_type behavior. `Alias' is an atom, and is used
 %% in the same way as `ram_copies' etc. The default alias is `rocksdb_copies'.
+%%
+%% Each alias keeps its tables in a RocksDB instance of its own, opened with the
+%% `default_rocksdb_opts' and `alias_rocksdb_opts' application env (see the README).
 %% @end
 -spec register(alias()) -> {ok, alias()} | error().
 register(Alias) ->
@@ -384,11 +387,43 @@ check_definition(Alias, Tab, Nodes, Props) ->
     try
         Props1 = lists:map(fun(E) -> check_definition_entry(Tab, Id, E) end, Props),
         Props2 = check_encoding(Tab, Props1),
+        ok = check_fifo(Alias, Tab, Nodes, Props2),
         {ok, Props2}
     catch
         throw:Error ->
             Error
     end.
+
+check_fifo(Alias, Tab, Nodes, Props) ->
+    UserProps = proplists:get_value(user_properties, Props, []),
+    RdbOpts = proplists:get_value(rocksdb_opts, UserProps, []),
+    mnesia_rocksdb_lib:valid_opts(RdbOpts) orelse throw({error, {invalid_rocksdb_opts, Tab}}),
+    Instances = holder_instances(Alias, Nodes, RdbOpts, Props),
+    HasIndexes = proplists:get_value(index, Props, []) =/= [],
+    case [Why || DbOpts <- Instances, {error, Why} <- [mnesia_rocksdb_lib:fifo_problem(RdbOpts, false, DbOpts)]] of
+        [Why | _] ->
+            throw({error, {Why, Tab}});
+        [] ->
+            case mnesia_rocksdb_lib:fifo_check(RdbOpts, HasIndexes, elsewhere, Tab) of
+                ok -> ok;
+                {error, Why} -> throw({error, {Why, Tab}})
+            end
+    end.
+
+%% The instances a FIFO table is judged against: a standalone table's own, or those of the
+%% nodes holding it in Alias. mnesia checks a definition only on the node running the schema
+%% operation, so the other holders are asked, all at once; one that cannot be reached in
+%% time judges the table itself when its instance opens.
+holder_instances(Alias, Nodes, RdbOpts, Props) ->
+    case {mnesia_rocksdb_lib:is_fifo(RdbOpts), mnesia_rocksdb_admin:rdb_opt_standalone(Props)} of
+        {false, _} -> [];
+        {true, true} -> [mnesia_rocksdb_lib:effective_db_opts(RdbOpts)];
+        {true, false} -> holders_db_opts(Alias, Nodes)
+    end.
+
+holders_db_opts(Alias, Nodes) ->
+    {Remote, _Unreachable} = rpc:multicall(Nodes -- [node()], mnesia_rocksdb_admin, instance_db_opts, [Alias], 5000),
+    [mnesia_rocksdb_admin:instance_db_opts(Alias) || lists:member(node(), Nodes)] ++ [DbOpts || DbOpts <- Remote, is_list(DbOpts)].
 
 check_encoding(Tab, Props) ->
     {_, Type} = lists:keyfind(type, 1, Props),

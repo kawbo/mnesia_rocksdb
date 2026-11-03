@@ -16,6 +16,49 @@
         , column_families_share_one_block_cache/1
 ]).
 
+-export([ log/2 ]).
+-export([ alias_overriding_one_table_option_keeps_the_shared_cache/1
+        , alias_indexes_inherit_only_their_tables_bounding_options/1
+        , cleared_index_takes_its_tables_current_options/1
+        , fifo_check_follows_mrdb_legacy_standalone/1
+        , failed_create_leaves_no_instance_directory/1
+        , standalone_fifo_table_with_index_opens_and_reopens/1
+        , fifo_check_judges_the_options_its_instance_runs_with/1
+        , malformed_rocksdb_opts_are_refused_cleanly/1
+        , failed_create_keeps_a_path_it_did_not_create/1
+        , admin_write_table_property_reaches_the_schema_and_the_table/1
+        , admin_write_table_property_does_not_wait_on_its_callers_schema_lock/1
+        , fifo_instance_rule_is_judged_where_the_table_lives/1
+        , fifo_instance_rule_is_judged_on_every_node_holding_the_table/1
+        , holders_are_asked_about_their_instances_at_once/1
+        , malformed_options_in_the_schema_reopen_with_defaults/1
+        , standalone_table_follows_its_written_properties/1
+        , removed_alias_leaves_no_table_refs_behind/1
+        , compaction_options_of_an_instance_are_reported_as_unused/1
+        , fifo_data_size_cap_counts_as_a_size_cap/1
+        , removed_alias_leaves_no_ref_behind/1
+        , admin_write_table_property_refuses_tables_outside_its_alias/1
+        , column_family_left_by_a_table_of_another_alias_reopens_with_defaults/1
+        , alias_db_refuses_to_open_with_a_fifo_table_its_instance_cannot_hold/1
+        , fifo_index_rule_refusal_points_to_the_escape_hatch_and_warn_starts_anyway/1
+        , alias_indexes_keep_their_tables_options/1
+        , alias_retainers_keep_default_options/1
+        , alias_table_switched_to_fifo_reopens_with_its_data/1
+        , alias_fifo_options_never_reach_the_admin_column_families/1
+        , fifo_needs_max_open_files_unlimited_in_its_instance/1
+        , fifo_table_with_index_needs_a_ttl_and_no_size_cap/1
+        , index_added_later_to_capped_fifo_table_is_refused/1
+        , capped_fifo_options_written_later_onto_indexed_table_are_refused/1
+        , alias_options_win_also_where_they_are_rewritten/1
+        , alias_db_that_cannot_reopen_names_the_cause/1
+        , alias_db_refuses_to_open_with_an_indexed_table_breaking_the_fifo_rules/1
+        , alias_db_opens_with_alias_rocksdb_opts/1
+        , alias_tables_live_in_alias_db/1
+        , fifo_options_apply_per_column_family/1
+        , alias_tables_reopen_with_their_options/1
+        , delete_alias_table/1
+        ]).
+
 -export([ encoding_sext_attrs/1
         , encoding_binary_binary/1
         , encoding_defaults/1
@@ -39,6 +82,15 @@
 
 -define(TABS_CREATED, tables_created).
 
+%% A second alias, configured to get a RocksDB instance of its own (see the
+%% alias_instances group).
+-define(TRAFFIC, rdb_traffic).
+-define(SMALL_FIFO, 262144).
+-define(LARGE_FIFO, 67108864).
+-define(UNLIMITED, 18446744073709551615).
+-define(FIFO_ROUNDS, 8).
+-define(FIFO_ROUND_SIZE, 100).
+
 suite() ->
     [].
 
@@ -50,10 +102,53 @@ groups() ->
       {all_tests, [sequence], [ {group, checks}
                               , {group, mrdb}
                               , {group, counters}
-                              , {group, options}]}
+                              , {group, options}
+                              , {group, alias_instances}]}
     , {options, [sequence], [ admin_db_opens_with_default_rocksdb_opts
                             , direct_access_column_family_table
                             , column_families_share_one_block_cache ]}
+    , {alias_instances, [sequence], [ alias_db_opens_with_alias_rocksdb_opts
+                                    , alias_tables_live_in_alias_db
+                                    , fifo_options_apply_per_column_family
+                                    , restart_node
+                                    , alias_db_opens_with_alias_rocksdb_opts
+                                    , alias_tables_reopen_with_their_options
+                                    , delete_alias_table
+                                    , alias_indexes_keep_their_tables_options
+                                    , alias_retainers_keep_default_options
+                                    , alias_table_switched_to_fifo_reopens_with_its_data
+                                    , alias_fifo_options_never_reach_the_admin_column_families
+                                    , fifo_needs_max_open_files_unlimited_in_its_instance
+                                    , fifo_table_with_index_needs_a_ttl_and_no_size_cap
+                                    , index_added_later_to_capped_fifo_table_is_refused
+                                    , capped_fifo_options_written_later_onto_indexed_table_are_refused
+                                    , alias_options_win_also_where_they_are_rewritten
+                                    , alias_overriding_one_table_option_keeps_the_shared_cache
+                                    , alias_db_that_cannot_reopen_names_the_cause
+                                    , alias_db_refuses_to_open_with_a_fifo_table_its_instance_cannot_hold
+                                    , alias_indexes_inherit_only_their_tables_bounding_options
+                                    , cleared_index_takes_its_tables_current_options
+                                    , fifo_check_follows_mrdb_legacy_standalone
+                                    , failed_create_leaves_no_instance_directory
+                                    , standalone_fifo_table_with_index_opens_and_reopens
+                                    , fifo_check_judges_the_options_its_instance_runs_with
+                                    , malformed_rocksdb_opts_are_refused_cleanly
+                                    , failed_create_keeps_a_path_it_did_not_create
+                                    , admin_write_table_property_reaches_the_schema_and_the_table
+                                    , admin_write_table_property_does_not_wait_on_its_callers_schema_lock
+                                    , fifo_instance_rule_is_judged_where_the_table_lives
+                                    , fifo_instance_rule_is_judged_on_every_node_holding_the_table
+                                    , holders_are_asked_about_their_instances_at_once
+                                    , malformed_options_in_the_schema_reopen_with_defaults
+                                    , standalone_table_follows_its_written_properties
+                                    , compaction_options_of_an_instance_are_reported_as_unused
+                                    , fifo_data_size_cap_counts_as_a_size_cap
+                                    , removed_alias_leaves_no_ref_behind
+                                    , admin_write_table_property_refuses_tables_outside_its_alias
+                                    , column_family_left_by_a_table_of_another_alias_reopens_with_defaults
+                                    , fifo_index_rule_refusal_points_to_the_escape_hatch_and_warn_starts_anyway
+                                    , alias_db_refuses_to_open_with_an_indexed_table_breaking_the_fifo_rules
+                                    , removed_alias_leaves_no_table_refs_behind ]}
                               %% , error_handling ]}
     , {checks, [sequence], [ encoding_sext_attrs
                            , encoding_binary_binary
@@ -95,11 +190,24 @@ init_per_group(options, Config) ->
     mnesia:stop(),
     ok = mnesia_rocksdb_tlib:start_mnesia(reset),
     Config;
+init_per_group(alias_instances, Config) ->
+    ok = application:set_env(mnesia_rocksdb, default_rocksdb_opts, [{max_open_files, 123}]),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts,
+                             [{?TRAFFIC, [{max_open_files, -1}]}]),
+    mnesia:stop(),
+    ok = mnesia_rocksdb_tlib:start_mnesia(reset),
+    {ok, ?TRAFFIC} = mnesia_rocksdb:register(?TRAFFIC),
+    Config;
 init_per_group(_, Config) ->
     Config.
 
 end_per_group(options, _Config) ->
     ok = application:unset_env(mnesia_rocksdb, default_rocksdb_opts);
+end_per_group(alias_instances, _Config) ->
+    ok = application:unset_env(mnesia_rocksdb, default_rocksdb_opts),
+    ok = application:unset_env(mnesia_rocksdb, alias_rocksdb_opts),
+    mnesia:stop(),
+    ok = mnesia_rocksdb_tlib:start_mnesia(reset);
 end_per_group(_, _Config) ->
     ok.
 
@@ -836,9 +944,7 @@ check_stats(Alias) ->
 %% DB-level rocksdb options cannot be carried by a column family table, so the admin db
 %% (shared by every column family of the alias) is opened with the configured defaults.
 admin_db_opens_with_default_rocksdb_opts(_Config) ->
-    Log = filename:join(mnesia_rocksdb_lib:data_mountpoint({admin, rdb}), "LOG"),
-    {ok, Contents} = file:read_file(Log),
-    {match, _} = re:run(Contents, <<"Options.max_open_files: 123">>),
+    {match, _} = re:run(admin_log(rdb), <<"Options.max_open_files: 123">>),
     ok.
 
 %% rocksdb_access_type is a user property like any other; a column family table must
@@ -873,3 +979,738 @@ column_families_share_one_block_cache(_Config) ->
     true = Usage(cache_a) > 0,
     [_Shared] = lists:usort([U || {_T, U} <- Usages]),
     ok.
+
+%% An alias configured under alias_rocksdb_opts gets a RocksDB instance of its own, opened
+%% with its DB-level options on top of default_rocksdb_opts; other aliases keep the defaults.
+alias_db_opens_with_alias_rocksdb_opts(_Config) ->
+    {match, _} = re:run(admin_log(?TRAFFIC), <<"Options.max_open_files: -1\n">>),
+    {match, _} = re:run(admin_log(rdb), <<"Options.max_open_files: 123\n">>),
+    #{db_ref := TrafficDb, mountpoint := TrafficMP} = mrdb:get_ref({admin, ?TRAFFIC}),
+    #{db_ref := MainDb, mountpoint := MainMP} = mrdb:get_ref({admin, rdb}),
+    true = TrafficDb =/= MainDb,
+    true = TrafficMP =/= MainMP,
+    ok.
+
+%% Tables of the alias are column families of the alias' own instance, each created with
+%% its own rocksdb_opts. FIFO compaction is only accepted there, since RocksDB demands
+%% max_open_files = -1 of the whole instance.
+alias_tables_live_in_alias_db(_Config) ->
+    [{atomic, ok} = mnesia:create_table(T, [{?TRAFFIC, [node()]}, {attributes, [k, v]},
+                                             {user_properties, [{rocksdb_opts, fifo_opts(Size)}]}])
+     || {T, Size} <- traffic_tabs()],
+    {atomic, ok} = mnesia:create_table(plain, [{rdb, [node()]}, {attributes, [k, v]}]),
+    #{db_ref := TrafficDb, mountpoint := TrafficMP} = mrdb:get_ref({admin, ?TRAFFIC}),
+    #{db_ref := MainDb, mountpoint := MainMP} = mrdb:get_ref({admin, rdb}),
+    [#{type := column_family, alias := ?TRAFFIC, db_ref := TrafficDb} = mrdb:get_ref(T)
+     || {T, _} <- traffic_tabs()],
+    #{type := column_family, alias := rdb, db_ref := MainDb} = mrdb:get_ref(plain),
+    {ok, TrafficCFs} = rocksdb:list_column_families(TrafficMP, []),
+    {ok, MainCFs} = rocksdb:list_column_families(MainMP, []),
+    ct:log("~p column families: ~p~n~p column families: ~p", [?TRAFFIC, TrafficCFs, rdb, MainCFs]),
+    [true = lists:member(cf_name(T), TrafficCFs) || {T, _} <- traffic_tabs()],
+    [false = lists:member(cf_name(T), MainCFs) || {T, _} <- traffic_tabs()],
+    true = lists:member(cf_name(plain), MainCFs),
+    false = lists:member(cf_name(plain), TrafficCFs),
+    [ok = mnesia:dirty_write({T, hello, T}) || T <- [plain | traffic_names()]],
+    [[{T, hello, T}] = mnesia:dirty_read(T, hello) || T <- [plain | traffic_names()]],
+    [ok = mnesia:dirty_delete(T, hello) || T <- traffic_names()],
+    check_fifo_options(),
+    ok.
+
+%% max_table_files_size is a per column family limit: past it, only the table that set the
+%% small limit loses its oldest data, its sibling in the same instance keeps everything.
+fifo_options_apply_per_column_family(_Config) ->
+    fill_traffic_tabs(1, ?FIFO_ROUNDS),
+    ok = try_until([], fun() -> mnesia:dirty_read(traffic_wp, {1, 1}) end, 100),
+    [_] = mnesia:dirty_read(traffic_wp, {?FIFO_ROUNDS, 1}),
+    all_present(traffic_ws, 1, ?FIFO_ROUNDS),
+    ok.
+
+%% After a restart the tables are column families of the alias' instance again, reopened
+%% with their own rocksdb_opts rather than defaults, and the data written before is there.
+alias_tables_reopen_with_their_options(_Config) ->
+    ok = mnesia:wait_for_tables([plain | traffic_names()], 10000),
+    #{db_ref := TrafficDb} = mrdb:get_ref({admin, ?TRAFFIC}),
+    #{db_ref := MainDb} = mrdb:get_ref({admin, rdb}),
+    [#{type := column_family, alias := ?TRAFFIC, db_ref := TrafficDb} = mrdb:get_ref(T)
+     || T <- traffic_names()],
+    #{alias := rdb, db_ref := MainDb} = mrdb:get_ref(plain),
+    [{plain, hello, plain}] = mnesia:dirty_read(plain, hello),
+    [_] = mnesia:dirty_read(traffic_wp, {?FIFO_ROUNDS, 1}),
+    all_present(traffic_ws, 1, ?FIFO_ROUNDS),
+    check_fifo_options(),
+    %% The FIFO limit is still in force: further writes push out the pre-restart data
+    fill_traffic_tabs(?FIFO_ROUNDS + 1, 2 * ?FIFO_ROUNDS),
+    ok = try_until([], fun() -> mnesia:dirty_read(traffic_wp, {?FIFO_ROUNDS, 1}) end, 100),
+    [_] = mnesia:dirty_read(traffic_wp, {2 * ?FIFO_ROUNDS, 1}),
+    all_present(traffic_ws, 1, 2 * ?FIFO_ROUNDS),
+    ok.
+
+%% Deleting a table of the alias drops its column family, and only it.
+delete_alias_table(_Config) ->
+    #{mountpoint := TrafficMP} = mrdb:get_ref({admin, ?TRAFFIC}),
+    {atomic, ok} = mnesia:delete_table(traffic_wp),
+    {ok, CFs} = rocksdb:list_column_families(TrafficMP, []),
+    false = lists:member(cf_name(traffic_wp), CFs),
+    true = lists:member(cf_name(traffic_ws), CFs),
+    all_present(traffic_ws, 1, 2 * ?FIFO_ROUNDS),
+    ok = restart_and_wait([traffic_ws, plain]),
+    {aborted, {no_exists, _}} = mnesia:delete_table(traffic_wp),
+    all_present(traffic_ws, 1, 2 * ?FIFO_ROUNDS),
+    {atomic, ok} = mnesia:delete_table(traffic_ws),
+    {atomic, ok} = mnesia:delete_table(plain),
+    ok.
+
+%% An index lives and dies with its table's rows, so it gets the table's rocksdb_opts: an
+%% index of a FIFO table is FIFO too, when created and again after a restart, and its
+%% entries age out with the rows instead of piling up.
+alias_indexes_keep_their_tables_options(_Config) ->
+    {atomic, ok} = mnesia:create_table(indexed_fifo, [{?TRAFFIC, [node()]}, {attributes, [k, v]}, {index, [v]},
+                                                      {user_properties, [{rocksdb_opts, [{ttl, 3600} | fifo_opts(infinity)]}]}]),
+    #{mountpoint := MP} = mrdb:get_ref({admin, ?TRAFFIC}),
+    true = cf_is_fifo(MP, "{i,indexed_fifo,", ?UNLIMITED),
+    ok = restart_and_wait([indexed_fifo]),
+    true = cf_is_fifo(MP, "{i,indexed_fifo,", ?UNLIMITED),
+    {atomic, ok} = mnesia:delete_table(indexed_fifo),
+    ok.
+
+%% A checkpoint's retainer must keep every old value for as long as the checkpoint is
+%% active, so it does not take its table's FIFO options: it keeps the defaults.
+alias_retainers_keep_default_options(_Config) ->
+    {atomic, ok} = mnesia:create_table(retained_fifo, [{?TRAFFIC, [node()]}, {attributes, [k, v]},
+                                                       {user_properties, [{rocksdb_opts, fifo_opts(?SMALL_FIFO)}]}]),
+    ok = mnesia:dirty_write({retained_fifo, 1, one}),
+    {ok, Checkpoint, _Nodes} = mnesia:activate_checkpoint([{max, [retained_fifo]}]),
+    #{mountpoint := MP} = mrdb:get_ref({admin, ?TRAFFIC}),
+    Fifo = cf_is_fifo(MP, "{r,retained_fifo,", ?SMALL_FIFO),
+    ok = mnesia:deactivate_checkpoint(Checkpoint),
+    {atomic, ok} = mnesia:delete_table(retained_fifo),
+    false = Fifo,
+    ok.
+
+%% A table that ran with level compaction, its data compacted down to the bottom level, can
+%% be switched to FIFO through its rocksdb_opts: after a restart RocksDB opens it as FIFO and
+%% the data is still there.
+alias_table_switched_to_fifo_reopens_with_its_data(_Config) ->
+    {atomic, ok} = mnesia:create_table(leveled_then_fifo, [{?TRAFFIC, [node()]}, {attributes, [k, v]}]),
+    [ok = mnesia:dirty_write({leveled_then_fifo, N, crypto:strong_rand_bytes(1024)}) || N <- lists:seq(1, 6000)],
+    #{db_ref := Db, cf_handle := Cf} = mrdb:get_ref(leveled_then_fifo),
+    #{mountpoint := MP} = mrdb:get_ref({admin, ?TRAFFIC}),
+    ok = rocksdb:flush(Db, Cf, [{wait, true}]),
+    ok = rocksdb:compact_range(Db, Cf, undefined, undefined, [{bottommost_level_compaction, force}]),
+    {ok, Levels} = rocksdb:get_property(Db, Cf, <<"rocksdb.levelstats">>),
+    ct:log("levels before the switch:~n~s", [Levels]),
+    {atomic, ok} = mnesia:write_table_property(leveled_then_fifo, {rocksdb_opts, fifo_opts(?LARGE_FIFO)}),
+    ok = restart_and_wait([leveled_then_fifo]),
+    true = cf_is_fifo(MP, "{d,leveled_then_fifo}", ?LARGE_FIFO),
+    [{leveled_then_fifo, 1, _}] = mnesia:dirty_read(leveled_then_fifo, 1),
+    [{leveled_then_fifo, 6000, _}] = mnesia:dirty_read(leveled_then_fifo, 6000),
+    {atomic, ok} = mnesia:delete_table(leveled_then_fifo),
+    ok.
+
+%% FIFO compaction options in an alias' config are for its tables: the instance's own column
+%% families, which hold the table metadata, never take them, so the metadata cannot age out.
+alias_fifo_options_never_reach_the_admin_column_families(_Config) ->
+    {ok, Aliases} = application:get_env(mnesia_rocksdb, alias_rocksdb_opts),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts,
+                             [{rdb_fifo_cfg, [{max_open_files, -1} | fifo_opts(?SMALL_FIFO)] ++ [{ttl, 3600}]} | Aliases]),
+    {ok, rdb_fifo_cfg} = mnesia_rocksdb:register(rdb_fifo_cfg),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts, Aliases),
+    #{mountpoint := MP} = mrdb:get_ref({admin, rdb_fifo_cfg}),
+    {ok, CFs} = rocksdb:list_column_families(MP, []),
+    Sections = [{CF, cf_options_section(latest_options_file(MP), CF)} || CF <- CFs],
+    ct:log("admin column families: ~p", [Sections]),
+    [] = [CF || {CF, Section} <- Sections, re:run(Section, <<"compaction_style=kCompactionStyleFIFO">>) =/= nomatch],
+    ok.
+
+%% RocksDB only opens FIFO column families in an instance with max_open_files = -1. A table
+%% that would land in one without it is refused before mnesia commits it: a column family
+%% table in an alias opened with another value, a standalone table not asking for it.
+fifo_needs_max_open_files_unlimited_in_its_instance(_Config) ->
+    {aborted, InMain} = mnesia:create_table(fifo_in_main, [{rdb, [node()]}, {attributes, [k, v]},
+                                                         {user_properties, [{rocksdb_opts, fifo_opts(?SMALL_FIFO)}]}]),
+    true = refused_for(fifo_requires_max_open_files_unlimited, InMain),
+    {aborted, Standalone} = mnesia:create_table(fifo_standalone, [{rdb, [node()]}, {attributes, [k, v]},
+                                                                {user_properties, [{rocksdb_standalone, true},
+                                                                                   {rocksdb_opts, fifo_opts(?SMALL_FIFO)}]}]),
+    true = refused_for(fifo_requires_max_open_files_unlimited, Standalone),
+    {atomic, ok} = mnesia:create_table(fifo_standalone, [{rdb, [node()]}, {attributes, [k, v]},
+                                                       {user_properties, [{rocksdb_standalone, true},
+                                                                          {rocksdb_opts, [{max_open_files, -1} | fifo_opts(?SMALL_FIFO)]}]}]),
+    ok = mnesia:dirty_write({fifo_standalone, 1, one}),
+    {atomic, ok} = mnesia:delete_table(fifo_standalone),
+    ok.
+
+%% An index does not expire with its rows under a size cap: its column family is smaller, so
+%% the rows go first and the index keeps their entries. A FIFO table with an index must
+%% therefore expire by age (ttl) and have its size cap switched off (infinity).
+fifo_table_with_index_needs_a_ttl_and_no_size_cap(_Config) ->
+    Create = fun(Name, RdbOpts) -> mnesia:create_table(Name, [{?TRAFFIC, [node()]}, {attributes, [k, v]}, {index, [v]},
+                                                              {user_properties, [{rocksdb_opts, RdbOpts}]}]) end,
+    {aborted, Capped} = Create(fifo_capped_index, fifo_opts(?SMALL_FIFO)),
+    true = refused_for(fifo_with_index_requires_ttl_and_no_size_cap, Capped),
+    {aborted, TtlAndCap} = Create(fifo_ttl_capped_index, [{ttl, 3600} | fifo_opts(?SMALL_FIFO)]),
+    true = refused_for(fifo_with_index_requires_ttl_and_no_size_cap, TtlAndCap),
+    {aborted, NoTtl} = Create(fifo_uncapped_index, fifo_opts(infinity)),
+    true = refused_for(fifo_with_index_requires_ttl_and_no_size_cap, NoTtl),
+    {atomic, ok} = Create(fifo_aged_index, [{ttl, 3600} | fifo_opts(infinity)]),
+    #{mountpoint := MP} = mrdb:get_ref({admin, ?TRAFFIC}),
+    true = cf_is_fifo(MP, "{d,fifo_aged_index}", ?UNLIMITED),
+    true = cf_is_fifo(MP, "{i,fifo_aged_index,", ?UNLIMITED),
+    ok = mnesia:dirty_write({fifo_aged_index, 1, one}),
+    [{fifo_aged_index, 1, one}] = mnesia:dirty_index_read(fifo_aged_index, one, v),
+    {atomic, ok} = mnesia:delete_table(fifo_aged_index),
+    ok.
+
+%% The same holds for an index added to a FIFO table later.
+index_added_later_to_capped_fifo_table_is_refused(_Config) ->
+    {atomic, ok} = mnesia:create_table(capped_then_indexed, [{?TRAFFIC, [node()]}, {attributes, [k, v]},
+                                                             {user_properties, [{rocksdb_opts, fifo_opts(?SMALL_FIFO)}]}]),
+    {aborted, Reason} = mnesia:add_table_index(capped_then_indexed, v),
+    true = refused_for(fifo_with_index_requires_ttl_and_no_size_cap, Reason),
+    ok = mnesia:dirty_write({capped_then_indexed, 1, one}),
+    [{capped_then_indexed, 1, one}] = mnesia:dirty_read(capped_then_indexed, 1),
+    {atomic, ok} = mnesia:delete_table(capped_then_indexed),
+    ok.
+
+%% And for size-capped FIFO options written later onto a table that has an index.
+capped_fifo_options_written_later_onto_indexed_table_are_refused(_Config) ->
+    {atomic, ok} = mnesia:create_table(indexed_then_capped, [{?TRAFFIC, [node()]}, {attributes, [k, v]}, {index, [v]}]),
+    {aborted, Reason} = mnesia:write_table_property(indexed_then_capped, {rocksdb_opts, fifo_opts(?SMALL_FIFO)}),
+    true = refused_for(fifo_with_index_requires_ttl_and_no_size_cap, Reason),
+    {atomic, ok} = mnesia:delete_table(indexed_then_capped),
+    ok.
+
+refused_for(Why, Reason) ->
+    ct:log("refused: ~p", [Reason]),
+    string:find(lists:flatten(io_lib:format("~p", [Reason])), atom_to_list(Why)) =/= nomatch.
+
+%% An index inherits only its table's bounding options (compaction style, FIFO options, ttl):
+%% anything tuned for the table's own keys, here its write buffer, stays the table's.
+alias_indexes_inherit_only_their_tables_bounding_options(_Config) ->
+    {atomic, ok} = mnesia:create_table(bounded_index, [{?TRAFFIC, [node()]}, {attributes, [k, v]}, {index, [v]},
+                                                       {user_properties, [{rocksdb_opts, [{ttl, 3600}, {write_buffer_size, 3145728} | fifo_opts(infinity)]}]}]),
+    #{mountpoint := MP} = mrdb:get_ref({admin, ?TRAFFIC}),
+    true = cf_is_fifo(MP, "{i,bounded_index,", ?UNLIMITED),
+    {match, _} = re:run(cf_section(MP, "{d,bounded_index}"), <<"write_buffer_size=3145728">>),
+    nomatch = re:run(cf_section(MP, "{i,bounded_index,"), <<"write_buffer_size=3145728">>),
+    {atomic, ok} = mnesia:delete_table(bounded_index),
+    ok.
+
+%% Clearing a table recreates its index with the table's current options, the same ones a
+%% restart would reopen it with, not the ones the index was first created with.
+cleared_index_takes_its_tables_current_options(_Config) ->
+    {atomic, ok} = mnesia:create_table(cleared_index, [{?TRAFFIC, [node()]}, {attributes, [k, v]}, {index, [v]}]),
+    {atomic, ok} = mnesia:write_table_property(cleared_index, {rocksdb_opts, [{ttl, 3600} | fifo_opts(infinity)]}),
+    {atomic, ok} = mnesia:clear_table(cleared_index),
+    #{mountpoint := MP} = mrdb:get_ref({admin, ?TRAFFIC}),
+    true = cf_is_fifo(MP, "{i,cleared_index,", ?UNLIMITED),
+    {atomic, ok} = mnesia:delete_table(cleared_index),
+    ok.
+
+%% With MRDB_LEGACY=true every table is standalone, so a FIFO table is judged against its own
+%% options, not its alias' instance.
+fifo_check_follows_mrdb_legacy_standalone(_Config) ->
+    true = os:putenv("MRDB_LEGACY", "true"),
+    Result = mnesia:create_table(legacy_fifo, [{rdb, [node()]}, {attributes, [k, v]},
+                                              {user_properties, [{rocksdb_opts, [{max_open_files, -1} | fifo_opts(?SMALL_FIFO)]}]}]),
+    true = os:unsetenv("MRDB_LEGACY"),
+    {atomic, ok} = Result,
+    {atomic, ok} = mnesia:delete_table(legacy_fifo),
+    ok.
+
+%% An instance that fails to be created leaves no directory behind, so once its config is
+%% fixed the next start creates it afresh instead of failing to reopen an empty directory.
+failed_create_leaves_no_instance_directory(_Config) ->
+    {ok, Aliases} = application:get_env(mnesia_rocksdb, alias_rocksdb_opts),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts, [{rdb_bad_wal, [{wal_dir, "/proc/nonexistent/wal"}]} | Aliases]),
+    MP = mnesia_rocksdb_lib:data_mountpoint({admin, rdb_bad_wal}),
+    {_, Reported} = capture_log(error, "Cannot load admin db for alias rdb_bad_wal", fun() -> catch mnesia_rocksdb:register(rdb_bad_wal) end),
+    ok = await_restartable_mnesia(),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts, Aliases),
+    ct:log("reported: ~ts", [Reported]),
+    false = filelib:is_dir(MP),
+    ok = mnesia:start(),
+    {ok, rdb_bad_wal} = mnesia_rocksdb:register(rdb_bad_wal),
+    #{db_ref := _} = mrdb:get_ref({admin, rdb_bad_wal}),
+    ok.
+
+%% A standalone table's index is an instance of its own: it takes max_open_files from its
+%% table along with the FIFO options, as RocksDB opens FIFO only with max_open_files = -1.
+standalone_fifo_table_with_index_opens_and_reopens(_Config) ->
+    {atomic, ok} = mnesia:create_table(standalone_indexed_fifo,
+                                       [{rdb, [node()]}, {attributes, [k, v]}, {index, [v]},
+                                        {user_properties, [{rocksdb_standalone, true},
+                                                           {rocksdb_opts, [{max_open_files, -1}, {ttl, 3600} | fifo_opts(infinity)]}]}]),
+    ok = mnesia:dirty_write({standalone_indexed_fifo, 1, one}),
+    [{standalone_indexed_fifo, 1, one}] = mnesia:dirty_index_read(standalone_indexed_fifo, one, v),
+    ok = restart_and_wait([standalone_indexed_fifo]),
+    [{standalone_indexed_fifo, 1, one}] = mnesia:dirty_index_read(standalone_indexed_fifo, one, v),
+    {atomic, ok} = mnesia:delete_table(standalone_indexed_fifo),
+    ok.
+
+%% A table is judged against the options its alias' instance runs with: options changed in
+%% the env take effect only when the instance is reopened.
+fifo_check_judges_the_options_its_instance_runs_with(_Config) ->
+    Props = [{type, set}, {attributes, [k, v]}, {user_properties, [{rocksdb_opts, fifo_opts(?SMALL_FIFO)}]}],
+    {ok, Aliases} = application:get_env(mnesia_rocksdb, alias_rocksdb_opts),
+    ok = application:set_env(mnesia_rocksdb, default_rocksdb_opts, [{max_open_files, -1}]),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts, [{?TRAFFIC, [{max_open_files, 123}]}]),
+    InMain = mnesia_rocksdb:check_definition(rdb, live_opts, [node()], Props),
+    InTraffic = mnesia_rocksdb:check_definition(?TRAFFIC, live_opts, [node()], Props),
+    ok = application:set_env(mnesia_rocksdb, default_rocksdb_opts, [{max_open_files, 123}]),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts, Aliases),
+    {error, {fifo_requires_max_open_files_unlimited, live_opts}} = InMain,
+    {ok, _} = InTraffic,
+    ok.
+
+%% Malformed rocksdb_opts abort the schema change with a reason naming them; a bare atom is an
+%% option set to true, as in a proplist.
+malformed_rocksdb_opts_are_refused_cleanly(_Config) ->
+    Create = fun(Name, RdbOpts) -> mnesia:create_table(Name, [{?TRAFFIC, [node()]}, {attributes, [k, v]}, {index, [v]},
+                                                              {user_properties, [{rocksdb_opts, RdbOpts}]}]) end,
+    {aborted, NotAList} = Create(opts_not_a_list, not_a_list),
+    true = refused_for(invalid_rocksdb_opts, NotAList),
+    {aborted, NotAnOption} = Create(opts_not_an_option, [{ttl, 3600, extra}]),
+    true = refused_for(invalid_rocksdb_opts, NotAnOption),
+    {aborted, FifoNotAList} = Create(fifo_opts_not_a_list, [{ttl, 3600}, {compaction_style, fifo}, {compaction_options_fifo, 1024}]),
+    true = refused_for(invalid_rocksdb_opts, FifoNotAList),
+    {atomic, ok} = Create(bare_atom_option, [use_bloomfilter, {ttl, 3600} | fifo_opts(infinity)]),
+    ok = mnesia:dirty_write({bare_atom_option, 1, one}),
+    [{bare_atom_option, 1, one}] = mnesia:dirty_index_read(bare_atom_option, one, v),
+    {atomic, ok} = mnesia:delete_table(bare_atom_option),
+    yes = mnesia:system_info(is_running),
+    ok.
+
+%% A failed create removes only a directory it made itself: a path already there, here a
+%% dangling symlink to an unmounted volume, is left alone.
+failed_create_keeps_a_path_it_did_not_create(_Config) ->
+    {ok, Aliases} = application:get_env(mnesia_rocksdb, alias_rocksdb_opts),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts, [{rdb_dangling, [{wal_dir, "/proc/nonexistent/wal"}]} | Aliases]),
+    MP = mnesia_rocksdb_lib:data_mountpoint({admin, rdb_dangling}),
+    ok = file:make_symlink("/nonexistent/rdb_dangling_volume", MP),
+    {_, Reported} = capture_log(error, "Cannot load admin db for alias rdb_dangling", fun() -> catch mnesia_rocksdb:register(rdb_dangling) end),
+    ok = await_restartable_mnesia(),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts, Aliases),
+    ct:log("reported: ~ts", [Reported]),
+    Kept = file:read_link(MP),
+    _ = file:delete(MP),
+    ok = mnesia:start(),
+    {ok, "/nonexistent/rdb_dangling_volume"} = Kept,
+    ok.
+
+%% A property written through the admin lands in mnesia's schema and in the open table's
+%% record together; one the schema refuses changes neither.
+admin_write_table_property_reaches_the_schema_and_the_table(_Config) ->
+    {atomic, ok} = mnesia:create_table(admin_props, [{?TRAFFIC, [node()]}, {attributes, [k, v]}, {index, [v]}]),
+    ok = mnesia_rocksdb_admin:write_table_property(?TRAFFIC, admin_props, {owner, maria}),
+    true = lists:member({owner, maria}, mnesia:table_info(admin_props, user_properties)),
+    ok = try_until({owner, maria}, fun() -> maps:get(owner, admin_user_properties(admin_props), none) end),
+    {error, Refused} = mnesia_rocksdb_admin:write_table_property(?TRAFFIC, admin_props, {rocksdb_opts, fifo_opts(?SMALL_FIFO)}),
+    true = refused_for(fifo_with_index_requires_ttl_and_no_size_cap, Refused),
+    false = lists:keymember(rocksdb_opts, 1, mnesia:table_info(admin_props, user_properties)),
+    false = maps:is_key(rocksdb_opts, admin_user_properties(admin_props)),
+    {atomic, ok} = mnesia:delete_table(admin_props),
+    ok.
+
+admin_user_properties(Tab) ->
+    #{properties := #{user_properties := UPs}} = mrdb:get_ref(Tab),
+    UPs.
+
+%% The admin server serves every alias: a property write must not make it wait on a schema
+%% lock, here held by the caller itself, who is waiting on the admin's reply.
+admin_write_table_property_does_not_wait_on_its_callers_schema_lock(_Config) ->
+    {atomic, ok} = mnesia:create_table(locked_props, [{?TRAFFIC, [node()]}, {attributes, [k, v]}]),
+    Self = self(),
+    Caller = spawn(fun() ->
+                           Res = mnesia_schema:schema_transaction(
+                                   fun() ->
+                                           mnesia:lock({table, schema}, write),
+                                           mnesia_rocksdb_admin:write_table_property(?TRAFFIC, locked_props, {owner, maria})
+                                   end),
+                           Self ! {written, Res}
+                   end),
+    Written = receive {written, Res} -> Res after 5000 -> exit(Caller, kill), still_waiting end,
+    ct:log("written: ~p", [Written]),
+    {atomic, ok} = mnesia:delete_table(locked_props),
+    {atomic, {error, _}} = Written,
+    ok.
+
+%% max_data_files_size, when set, caps FIFO in place of max_table_files_size: an indexed
+%% table needs both off, infinity switching off either.
+fifo_data_size_cap_counts_as_a_size_cap(_Config) ->
+    Create = fun(Name, Fifo) -> mnesia:create_table(Name, [{?TRAFFIC, [node()]}, {attributes, [k, v]}, {index, [v]},
+                                                           {user_properties, [{rocksdb_opts, [{ttl, 3600}, {compaction_style, fifo},
+                                                                                              {compaction_options_fifo, Fifo}]}]}]) end,
+    {aborted, DataCapped} = Create(data_capped_index, [{max_table_files_size, infinity}, {max_data_files_size, ?SMALL_FIFO}]),
+    true = refused_for(fifo_with_index_requires_ttl_and_no_size_cap, DataCapped),
+    {atomic, ok} = Create(data_uncapped_index, [{max_table_files_size, infinity}, {max_data_files_size, infinity}]),
+    #{mountpoint := MP} = mrdb:get_ref({admin, ?TRAFFIC}),
+    {match, _} = re:run(cf_section(MP, "{i,data_uncapped_index,"), ["max_data_files_size=", integer_to_list(?UNLIMITED)]),
+    {atomic, ok} = mnesia:delete_table(data_uncapped_index),
+    ok.
+
+%% Removing an alias closes and deletes its instance, and its ref goes with it: nothing may
+%% go on judging tables against, or reaching, an instance that is gone.
+removed_alias_leaves_no_ref_behind(_Config) ->
+    {ok, rdb_removed} = mnesia_rocksdb:register(rdb_removed),
+    #{db_ref := _} = mrdb:get_ref({admin, rdb_removed}),
+    ok = mnesia_rocksdb:remove_aliases([rdb_removed]),
+    Left = mnesia_rocksdb_admin:get_ref({admin, rdb_removed}, gone),
+    {atomic, ok} = mnesia_schema:delete_backend_type(rdb_removed),
+    gone = Left,
+    ok.
+
+%% The admin writes properties only of tables this node stores in the given alias.
+admin_write_table_property_refuses_tables_outside_its_alias(_Config) ->
+    {atomic, ok} = mnesia:create_table(other_alias_props, [{?TRAFFIC, [node()]}, {attributes, [k, v]}]),
+    {atomic, ok} = mnesia:create_table(ram_props, [{ram_copies, [node()]}, {attributes, [k, v]}]),
+    OtherAlias = mnesia_rocksdb_admin:write_table_property(rdb, other_alias_props, {owner, maria}),
+    Ram = mnesia_rocksdb_admin:write_table_property(rdb, ram_props, {owner, maria}),
+    Untouched = [lists:keymember(owner, 1, mnesia:table_info(T, user_properties)) || T <- [other_alias_props, ram_props]],
+    {atomic, ok} = mnesia:delete_table(other_alias_props),
+    {atomic, ok} = mnesia:delete_table(ram_props),
+    {error, not_found} = OtherAlias,
+    {error, not_found} = Ram,
+    [false, false] = Untouched,
+    ok.
+
+%% A column family left in one alias' instance by a table now stored in another (an
+%% interrupted migration, say) reopens with the defaults: the table's options are its own
+%% instance's business, here FIFO, which the main instance could not hold.
+column_family_left_by_a_table_of_another_alias_reopens_with_defaults(_Config) ->
+    {atomic, ok} = mnesia:create_table(moved_fifo, [{?TRAFFIC, [node()]}, {attributes, [k, v]},
+                                                    {user_properties, [{rocksdb_opts, fifo_opts(?SMALL_FIFO)}]}]),
+    #{db_ref := MainDb} = mrdb:get_ref({admin, rdb}),
+    {ok, _} = rocksdb:create_column_family(MainDb, cf_name(moved_fifo), []),
+    {Restarted, Refused} = capture_log(error, "Cannot load admin db for alias rdb", 0, fun() -> restart_and_wait([moved_fifo]) end),
+    ct:log("restarted: ~p, refused: ~ts", [Restarted, Refused]),
+    nothing_reported = Refused,
+    ok = Restarted,
+    ok = mnesia:dirty_write({moved_fifo, 1, one}),
+    {atomic, ok} = mnesia:delete_table(moved_fifo),
+    ok.
+
+%% Whether a table's instance can hold FIFO is judged on the nodes holding the table, against
+%% their own instances: mnesia checks a definition on every node, schema merges included, and
+%% a node without a copy must not refuse it over its own options. The index rule depends on
+%% the table's options only, so every node applies it.
+fifo_instance_rule_is_judged_where_the_table_lives(_Config) ->
+    Elsewhere = ['holder@elsewhere'],
+    Def = fun(Extra) -> [{type, set}, {attributes, [k, v]}, {user_properties, [{rocksdb_opts, fifo_opts(?SMALL_FIFO)}]} | Extra] end,
+    {ok, _} = mnesia_rocksdb:check_definition(rdb, held_elsewhere, Elsewhere, Def([])),
+    {error, {fifo_requires_max_open_files_unlimited, held_here}} = mnesia_rocksdb:check_definition(rdb, held_here, [node()], Def([])),
+    {error, {fifo_with_index_requires_ttl_and_no_size_cap, indexed_elsewhere}} =
+        mnesia_rocksdb:check_definition(?TRAFFIC, indexed_elsewhere, Elsewhere, Def([{index, [{3, ordered}]}])),
+    ok.
+
+%% mnesia checks a definition on the node running the schema operation only, so that node
+%% asks every other node holding the table about its own instance; one it cannot reach
+%% judges the table itself when its instance opens.
+fifo_instance_rule_is_judged_on_every_node_holding_the_table(_Config) ->
+    {ok, Peer, Holder} = peer:start_link(#{name => peer:random_name(fifo_holder), args => ["-pa" | code:get_path()]}),
+    SetHolderOpts = fun(MaxOpenFiles) ->
+                            ok = rpc:call(Holder, application, set_env,
+                                          [mnesia_rocksdb, alias_rocksdb_opts, [{?TRAFFIC, [{max_open_files, MaxOpenFiles}]}]])
+                    end,
+    Def = [{type, set}, {attributes, [k, v]}, {user_properties, [{rocksdb_opts, fifo_opts(?SMALL_FIFO)}]}],
+    ok = SetHolderOpts(123),
+    Both = mnesia_rocksdb:check_definition(?TRAFFIC, held_by_both, [node(), Holder], Def),
+    HolderOnly = mnesia_rocksdb:check_definition(?TRAFFIC, held_by_holder, [Holder], Def),
+    ok = SetHolderOpts(-1),
+    BothUnlimited = mnesia_rocksdb:check_definition(?TRAFFIC, held_by_both, [node(), Holder], Def),
+    ok = peer:stop(Peer),
+    Unreachable = mnesia_rocksdb:check_definition(?TRAFFIC, held_by_both, [node(), Holder], Def),
+    {error, {fifo_requires_max_open_files_unlimited, held_by_both}} = Both,
+    {error, {fifo_requires_max_open_files_unlimited, held_by_holder}} = HolderOnly,
+    {ok, _} = BothUnlimited,
+    {ok, _} = Unreachable,
+    ok.
+
+%% mnesia holds schema locks while it checks a definition: holders slow to answer about their
+%% instances delay it by one timeout in all, not one per holder.
+holders_are_asked_about_their_instances_at_once(_Config) ->
+    Slow = [begin
+                {ok, Peer, Holder} = peer:start_link(#{name => peer:random_name(slow_holder), args => ["-pa" | code:get_path()]}),
+                ok = rpc:call(Holder, meck, new, [mnesia_rocksdb_admin, [passthrough, no_link]]),
+                ok = rpc:call(Holder, meck, expect, [mnesia_rocksdb_admin, instance_db_opts,
+                                                     fun(_Alias) -> receive after 60000 -> [] end end]),
+                {Peer, Holder}
+            end || _ <- [1, 2]],
+    Def = [{type, set}, {attributes, [k, v]}, {user_properties, [{rocksdb_opts, fifo_opts(?SMALL_FIFO)}]}],
+    {Micros, Checked} = timer:tc(mnesia_rocksdb, check_definition, [?TRAFFIC, held_by_slow, [Holder || {_, Holder} <- Slow], Def]),
+    _ = [ok = peer:stop(Peer) || {Peer, _} <- Slow],
+    ct:log("checked in ~p ms: ~p", [Micros div 1000, Checked]),
+    {ok, _} = Checked,
+    true = Micros < 8000000,
+    ok.
+
+%% A table whose rocksdb_opts in the schema are malformed (written before they were
+%% checked) reopens with the defaults, with a warning, instead of stopping its instance.
+malformed_options_in_the_schema_reopen_with_defaults(_Config) ->
+    {atomic, ok} = mnesia:create_table(legacy_opts, [{?TRAFFIC, [node()]}, {attributes, [k, v]}]),
+    ok = meck:new(mnesia_rocksdb, [passthrough]),
+    ok = meck:expect(mnesia_rocksdb, check_definition, fun(_Alias, _Tab, _Nodes, Props) -> {ok, Props} end),
+    Written = mnesia:write_table_property(legacy_opts, {rocksdb_opts, [{write_buffer_size, 3145728, extra}]}),
+    ok = meck:unload(mnesia_rocksdb),
+    {atomic, ok} = Written,
+    {Restarted, Warned} = capture_log(warning, "legacy_opts", fun() -> restart_and_wait([legacy_opts]) end),
+    ct:log("restarted: ~p, warned: ~ts", [Restarted, Warned]),
+    ok = Restarted,
+    ok = mnesia:dirty_write({legacy_opts, 1, one}),
+    {atomic, ok} = mnesia:delete_table(legacy_opts),
+    true = string:find(Warned, "default options") =/= nomatch,
+    ok.
+
+%% A property written to a standalone table reaches its ref, as one written to a column
+%% family table does.
+standalone_table_follows_its_written_properties(_Config) ->
+    {atomic, ok} = mnesia:create_table(standalone_props, [{rdb, [node()]}, {attributes, [k, v]},
+                                                          {user_properties, [{rocksdb_standalone, true}]}]),
+    {atomic, ok} = mnesia:write_table_property(standalone_props, {owner, maria}),
+    Followed = try_until({owner, maria}, fun() -> maps:get(owner, admin_user_properties(standalone_props), none) end),
+    {atomic, ok} = mnesia:delete_table(standalone_props),
+    ok = Followed,
+    ok.
+
+%% Removing an alias closes its instance: no ref of its tables may still lead there.
+removed_alias_leaves_no_table_refs_behind(_Config) ->
+    {ok, rdb_gone} = mnesia_rocksdb:register(rdb_gone),
+    {atomic, ok} = mnesia:create_table(gone_tab, [{rdb_gone, [node()]}, {attributes, [k, v]}, {index, [v]}]),
+    #{db_ref := _} = mrdb:get_ref(gone_tab),
+    ok = mnesia_rocksdb:remove_aliases([rdb_gone]),
+    Left = [mnesia_rocksdb_admin:get_ref(Tab, gone) || Tab <- [gone_tab, {gone_tab, index, {3, ordered}}]],
+    ct:log("left: ~p", [Left]),
+    [gone, gone] = Left,
+    ok.
+
+%% Compaction options in default_rocksdb_opts or alias_rocksdb_opts reach no column family:
+%% a table's own rocksdb_opts carry them. An instance opened with them says so.
+compaction_options_of_an_instance_are_reported_as_unused(_Config) ->
+    {ok, Aliases} = application:get_env(mnesia_rocksdb, alias_rocksdb_opts),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts, [{rdb_compacting, [{max_open_files, -1}, {ttl, 3600}]} | Aliases]),
+    {Registered, Warned} = capture_log(warning, "rdb_compacting", fun() -> mnesia_rocksdb:register(rdb_compacting) end),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts, Aliases),
+    ct:log("warned: ~ts", [Warned]),
+    {ok, rdb_compacting} = Registered,
+    true = string:find(Warned, "ttl") =/= nomatch,
+    ok.
+
+%% The index rule can be relaxed with {fifo_index_rule, warn}: tables breaking it are then
+%% accepted with a warning. Back on the default, an instance holding such a table refuses to
+%% open and its error names the escape hatch; with warn it opens again, warning about the table.
+fifo_index_rule_refusal_points_to_the_escape_hatch_and_warn_starts_anyway(_Config) ->
+    ok = application:set_env(mnesia_rocksdb, fifo_index_rule, warn),
+    {atomic, ok} = mnesia:create_table(tolerated_index, [{?TRAFFIC, [node()]}, {attributes, [k, v]}, {index, [v]},
+                                                         {user_properties, [{rocksdb_opts, fifo_opts(?LARGE_FIFO)}]}]),
+    ok = application:unset_env(mnesia_rocksdb, fifo_index_rule),
+    mnesia:stop(),
+    {_, Refused} = capture_log(error, "Cannot load admin db for alias rdb_traffic", fun mnesia:start/0),
+    ok = await_restartable_mnesia(),
+    ok = application:set_env(mnesia_rocksdb, fifo_index_rule, warn),
+    {ok, Warned} = capture_log(warning, "tolerated_index", fun() -> ok = mnesia:start(), mnesia:wait_for_tables([tolerated_index], 10000) end),
+    ok = mnesia:dirty_write({tolerated_index, 1, one}),
+    {atomic, ok} = mnesia:delete_table(tolerated_index),
+    ok = application:unset_env(mnesia_rocksdb, fifo_index_rule),
+    ct:log("refused: ~ts~nwarned: ~ts", [Refused, Warned]),
+    true = string:find(compact(Refused), "{fifo_with_index_requires_ttl_and_no_size_cap,tolerated_index}") =/= nomatch,
+    true = string:find(compact(Refused), "{fifo_index_rule,warn}") =/= nomatch,
+    true = string:find(Warned, "fifo_with_index_requires_ttl_and_no_size_cap") =/= nomatch,
+    ok.
+
+compact(Text) ->
+    re:replace(Text, "\\s+", "", [global, {return, list}]).
+
+restart_and_wait(Tabs) ->
+    mnesia:stop(),
+    ok = mnesia:start(),
+    mnesia:wait_for_tables(Tabs, 10000).
+
+%% Restarts mnesia with AliasOpts for the traffic alias, which make its instance refuse to
+%% reopen, and returns what is reported; mnesia is then back with the group's alias options.
+reopen_refused(AliasOpts) ->
+    {ok, Aliases} = application:get_env(mnesia_rocksdb, alias_rocksdb_opts),
+    mnesia:stop(),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts, [{?TRAFFIC, AliasOpts}]),
+    {_, Reported} = capture_log(error, "Cannot load admin db for alias", fun mnesia:start/0),
+    ok = await_restartable_mnesia(),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts, Aliases),
+    ok = mnesia:start(),
+    ct:log("reported: ~ts", [Reported]),
+    Reported.
+
+%% Runs Fun while logs of Level are captured; returns its result and the first log text
+%% containing Needle, or nothing_reported after Timeout.
+capture_log(Level, Needle, Fun) ->
+    capture_log(Level, Needle, 10000, Fun).
+
+capture_log(Level, Needle, Timeout, Fun) ->
+    ok = logger:add_handler(captured_log, ?MODULE, #{level => Level, config => #{pid => self()}}),
+    Result = Fun(),
+    Text = receive_log(fun(T) -> string:find(T, Needle) =/= nomatch end, Timeout),
+    ok = logger:remove_handler(captured_log),
+    {Result, Text}.
+
+await_restartable_mnesia() ->
+    Admin = monitor(process, mnesia_rocksdb_admin),
+    receive {'DOWN', Admin, process, _, _} -> ok after 30000 -> error(admin_still_up) end,
+    ok = try_until(false, fun() -> lists:keymember(mnesia, 1, application:which_applications()) end, 100),
+    mnesia:stop(),
+    ok.
+
+cf_section(MP, CfPrefix) ->
+    {ok, CFs} = rocksdb:list_column_families(MP, []),
+    [Cf] = [CF || CF <- CFs, lists:prefix(CfPrefix, CF)],
+    cf_options_section(latest_options_file(MP), Cf).
+
+cf_is_fifo(MP, CfPrefix, Size) ->
+    Section = cf_section(MP, CfPrefix),
+    ct:log("~s options: ~s", [CfPrefix, Section]),
+    re:run(Section, <<"compaction_style=kCompactionStyleFIFO">>) =/= nomatch
+        andalso re:run(Section, ["max_table_files_size=", integer_to_list(Size), "[;}]"]) =/= nomatch.
+
+%% Options given both in default_rocksdb_opts and for the alias are the alias' own, also
+%% the ones that are rewritten before RocksDB gets them: an alias asking for statistics
+%% gets a statistics object, not the raw <<"create">> that RocksDB cannot take.
+alias_options_win_also_where_they_are_rewritten(_Config) ->
+    {ok, Defaults} = application:get_env(mnesia_rocksdb, default_rocksdb_opts),
+    {ok, Aliases} = application:get_env(mnesia_rocksdb, alias_rocksdb_opts),
+    ok = application:set_env(mnesia_rocksdb, default_rocksdb_opts, [{statistics, <<"create">>} | Defaults]),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts, [{rdb_stats, [{statistics, <<"create">>}]} | Aliases]),
+    {ok, rdb_stats} = mnesia_rocksdb:register(rdb_stats),
+    ok = application:set_env(mnesia_rocksdb, default_rocksdb_opts, Defaults),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts, Aliases),
+    #{db_ref := _} = mrdb:get_ref({admin, rdb_stats}),
+    nomatch = re:run(admin_log(rdb_stats), <<"Options.statistics: \\(nil\\)">>),
+    {match, _} = re:run(admin_log(rdb_stats), <<"Options.statistics: 0x">>),
+    ok.
+
+%% Nested options merge across the layers: an alias that overrides only block_size of the
+%% defaults' block_based_table_options keeps their block_cache_size, so it still gets the
+%% node-wide shared cache of that size.
+alias_overriding_one_table_option_keeps_the_shared_cache(_Config) ->
+    {ok, Defaults} = application:get_env(mnesia_rocksdb, default_rocksdb_opts),
+    {ok, Aliases} = application:get_env(mnesia_rocksdb, alias_rocksdb_opts),
+    ok = application:set_env(mnesia_rocksdb, default_rocksdb_opts,
+                             [{block_based_table_options, [{block_cache_size, 12582912}, {block_size, 4096}]} | Defaults]),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts,
+                             [{rdb_bbt, [{block_based_table_options, [{block_size, 16384}]}]} | Aliases]),
+    {ok, rdb_bbt} = mnesia_rocksdb:register(rdb_bbt),
+    ok = application:set_env(mnesia_rocksdb, default_rocksdb_opts, Defaults),
+    ok = application:set_env(mnesia_rocksdb, alias_rocksdb_opts, Aliases),
+    #{db_ref := Db, mountpoint := MP} = mrdb:get_ref({admin, rdb_bbt}),
+    {ok, Capacity} = rocksdb:get_property(Db, <<"rocksdb.block-cache-capacity">>),
+    ct:log("block cache capacity: ~s", [Capacity]),
+    <<"12582912">> = Capacity,
+    {match, _} = re:run(latest_options_file(MP), <<"block_size=16384">>),
+    ok.
+
+%% An instance RocksDB refuses to reopen (here its WAL directory cannot be created) stops,
+%% and mnesia says why, naming RocksDB's reason and the tables with options of their own,
+%% instead of crashing on an unexpected open result.
+alias_db_that_cannot_reopen_names_the_cause(_Config) ->
+    {atomic, ok} = mnesia:create_table(own_opts_victim, [{?TRAFFIC, [node()]}, {attributes, [k, v]},
+                                                         {user_properties, [{rocksdb_opts, [{write_buffer_size, 3145728}]}]}]),
+    Reported = reopen_refused([{max_open_files, -1}, {wal_dir, "/proc/nonexistent/wal"}]),
+    ok = mnesia:wait_for_tables([own_opts_victim], 10000),
+    {atomic, ok} = mnesia:delete_table(own_opts_victim),
+    true = string:find(Reported, "/proc/nonexistent/wal") =/= nomatch,
+    true = string:find(compact(Reported), "tables_with_own_options=>[{own_opts_victim,") =/= nomatch,
+    ok.
+
+%% A FIFO table, with indexes or not, makes an instance without max_open_files = -1 refuse to
+%% open, naming the rule and the table before RocksDB is asked to open anything.
+alias_db_refuses_to_open_with_a_fifo_table_its_instance_cannot_hold(_Config) ->
+    {atomic, ok} = mnesia:create_table(fifo_victim, [{?TRAFFIC, [node()]}, {attributes, [k, v]},
+                                                     {user_properties, [{rocksdb_opts, fifo_opts(?SMALL_FIFO)}]}]),
+    Reported = reopen_refused([]),
+    ok = mnesia:wait_for_tables([fifo_victim], 10000),
+    {atomic, ok} = mnesia:delete_table(fifo_victim),
+    true = string:find(compact(Reported), "{fifo_requires_max_open_files_unlimited,fifo_victim}") =/= nomatch,
+    ok.
+
+%% A table with indexes breaking the FIFO rules makes its instance refuse to open, naming the
+%% rule and the table: here a FIFO table with an index, once the alias has lost
+%% max_open_files = -1. It is caught before RocksDB is asked to open anything.
+alias_db_refuses_to_open_with_an_indexed_table_breaking_the_fifo_rules(_Config) ->
+    {atomic, ok} = mnesia:create_table(indexed_victim, [{?TRAFFIC, [node()]}, {attributes, [k, v]}, {index, [v]},
+                                                        {user_properties, [{rocksdb_opts, [{ttl, 3600} | fifo_opts(infinity)]}]}]),
+    Reported = reopen_refused([]),
+    ok = mnesia:wait_for_tables([indexed_victim], 10000),
+    {atomic, ok} = mnesia:delete_table(indexed_victim),
+    true = string:find(compact(Reported), "{fifo_requires_max_open_files_unlimited,indexed_victim}") =/= nomatch,
+    ok.
+
+log(#{msg := Msg}, #{config := #{pid := Pid}}) ->
+    Pid ! {captured_log, log_text(Msg)},
+    ok.
+
+log_text({string, Chars}) -> unicode:characters_to_list(Chars);
+log_text({report, #{format := Format, args := Args}}) -> lists:flatten(io_lib:format(Format, Args));
+log_text({report, Report}) -> lists:flatten(io_lib:format("~p", [Report]));
+log_text({Format, Args}) -> lists:flatten(io_lib:format(Format, Args)).
+
+receive_log(Wanted, Timeout) ->
+    receive
+        {captured_log, Text} ->
+            case Wanted(Text) of
+                true -> Text;
+                false -> receive_log(Wanted, Timeout)
+            end
+    after Timeout -> nothing_reported
+    end.
+
+traffic_tabs() ->
+    [{traffic_wp, ?SMALL_FIFO}, {traffic_ws, ?LARGE_FIFO}].
+
+traffic_names() ->
+    [T || {T, _} <- traffic_tabs()].
+
+fifo_opts(Size) ->
+    [{compaction_style, fifo}, {compaction_options_fifo, [{max_table_files_size, Size}]}].
+
+cf_name(T) ->
+    lists:flatten(io_lib:fwrite("~w", [{d, T}])).
+
+admin_log(Alias) ->
+    Log = filename:join(mnesia_rocksdb_lib:data_mountpoint({admin, Alias}), "LOG"),
+    {ok, Contents} = file:read_file(Log),
+    Contents.
+
+%% Each round is a flushed sst file of roughly 100 KB of incompressible values per table.
+fill_traffic_tabs(From, To) ->
+    lists:foreach(
+      fun(R) ->
+              [ok = mnesia:dirty_write({T, {R, N}, crypto:strong_rand_bytes(1024)})
+               || T <- traffic_names(), N <- lists:seq(1, ?FIFO_ROUND_SIZE)],
+              [flush(T) || T <- traffic_names()]
+      end, lists:seq(From, To)).
+
+flush(T) ->
+    #{db_ref := Db, cf_handle := Cf} = mrdb:get_ref(T),
+    ok = rocksdb:flush(Db, Cf, [{wait, true}]).
+
+all_present(T, From, To) ->
+    [[_] = mnesia:dirty_read(T, {R, N}) || R <- lists:seq(From, To),
+                                          N <- lists:seq(1, ?FIFO_ROUND_SIZE)],
+    ok.
+
+%% RocksDB records the options each column family was last opened with in its newest
+%% OPTIONS file.
+check_fifo_options() ->
+    #{mountpoint := MP} = mrdb:get_ref({admin, ?TRAFFIC}),
+    [true = cf_is_fifo(MP, cf_name(T), Size) || {T, Size} <- traffic_tabs()],
+    ok.
+
+latest_options_file(MP) ->
+    {ok, Files} = file:list_dir(MP),
+    Numbered = [{list_to_integer(N), F} || "OPTIONS-" ++ N = F <- Files,
+                                           re:run(N, "^[0-9]+$") =/= nomatch],
+    {_, Latest} = lists:max(Numbered),
+    {ok, Bin} = file:read_file(filename:join(MP, Latest)),
+    Bin.
+
+cf_options_section(Options, CfName) ->
+    Header = iolist_to_binary(["[CFOptions \"", CfName, "\"]"]),
+    [_, Rest] = binary:split(Options, Header),
+    hd(binary:split(Rest, <<"\n[CFOptions">>)).

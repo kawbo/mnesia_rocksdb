@@ -13,6 +13,17 @@
         , tabname/1
         ]).
 
+-export([ latest_wins/1
+        , valid_opts/1
+        , effective_db_opts/1
+        , index_opts/1
+        , without_compaction_opts/1
+        , unlimited_fifo_size/1
+        , is_fifo/1
+        , fifo_check/4
+        , fifo_problem/3
+        ]).
+
 -export([ default_encoding/3
         , check_encoding/2
         , valid_obj_type/2
@@ -29,6 +40,10 @@
 
 -include("mnesia_rocksdb.hrl").
 -include_lib("hut/include/hut.hrl").
+
+-define(UNLIMITED_FIFO_SIZE, 18446744073709551615).
+-define(COMPACTION_OPTS, [compaction_style, compaction_options_fifo, ttl]).
+-define(IS_NESTED_OPT(K), (K =:= block_based_table_options orelse K =:= compaction_options_fifo)).
 
 put(#{db := Ref, cf := CF}, K, V, Opts) ->
     rocksdb:put(Ref, CF, K, V, Opts);
@@ -277,7 +292,7 @@ retainername(Name) ->
     lists:flatten(io_lib:write(Name)).
 
 open_rocksdb(MPd, RdbOpts, CFs) ->
-    open_rocksdb(MPd, rocksdb_open_opts_(RdbOpts), CFs, get_retries()).
+    open_rocksdb(MPd, effective_db_opts(RdbOpts), CFs, get_retries()).
 
 %% Code adapted from basho/riak_kv_eleveldb_backend.erl
 open_rocksdb(MPd, Opts, CFs, Retries) ->
@@ -313,11 +328,128 @@ open_db(MPd, Opts, CFs, RetriesLeft, _) ->
 get_retries() -> 30.
 get_retry_delay() -> 100.
 
-rocksdb_open_opts_(RdbOpts) ->
-    lists:foldl(
-      fun({K,_} = Item, Acc) ->
-              lists:keystore(K, 1, Acc, Item)
-      end, default_open_opts(), RdbOpts).
+%% The options an instance is opened with: the given ones over the library defaults.
+effective_db_opts(Opts) ->
+    latest_wins(default_open_opts() ++ Opts).
+
+%% Rules for a FIFO column family, judged on its rocksdb_opts and the options of the
+%% instance (DbOpts) it lives in, or elsewhere when that instance is on other nodes only,
+%% which judge it against their own:
+%% - RocksDB only opens FIFO in an instance with max_open_files = -1;
+%% - an index does not expire with its rows under a size cap (the smaller index column
+%%   family keeps entries of rows already dropped), so a FIFO table with indexes must expire
+%%   by age, {ttl, T > 0}, with its size caps switched off: max_table_files_size = infinity,
+%%   and max_data_files_size, which caps in its place when set, unset, 0 or infinity.
+fifo_problem(RdbOpts0, HasIndexes, DbOpts) ->
+    RdbOpts = latest_wins(RdbOpts0),
+    case is_fifo(RdbOpts) of
+        true ->
+            Fifo = proplists:get_value(compaction_options_fifo, RdbOpts, []),
+            Ttl = proplists:get_value(ttl, RdbOpts, 0),
+            DataCap = proplists:get_value(max_data_files_size, Fifo, 0),
+            Uncapped = size_off(proplists:get_value(max_table_files_size, Fifo, default))
+                andalso (DataCap =:= 0 orelse size_off(DataCap)),
+            case unlimited_open_files(DbOpts) of
+                true when HasIndexes, not (is_integer(Ttl) andalso Ttl > 0 andalso Uncapped) ->
+                    {error, fifo_with_index_requires_ttl_and_no_size_cap};
+                true ->
+                    ok;
+                false ->
+                    {error, fifo_requires_max_open_files_unlimited}
+            end;
+        false ->
+            ok
+    end.
+
+size_off(infinity) -> true;
+size_off(?UNLIMITED_FIFO_SIZE) -> true;
+size_off(_Cap) -> false.
+
+is_fifo(RdbOpts) ->
+    proplists:get_value(compaction_style, latest_wins(RdbOpts)) =:= fifo.
+
+unlimited_open_files(elsewhere) ->
+    true;
+unlimited_open_files(DbOpts) ->
+    proplists:get_value(max_open_files, latest_wins(DbOpts)) =:= -1.
+
+%% fifo_problem/3 with the index rule applied: a table breaking it is refused by default, or
+%% accepted with a warning when {mnesia_rocksdb, [{fifo_index_rule, warn}]} is set.
+fifo_check(RdbOpts, HasIndexes, DbOpts, Tab) ->
+    case fifo_problem(RdbOpts, HasIndexes, DbOpts) of
+        {error, fifo_with_index_requires_ttl_and_no_size_cap = Why} = Problem ->
+            case application:get_env(mnesia_rocksdb, fifo_index_rule, refuse) of
+                warn ->
+                    ?log(warning, "Table ~p breaks ~p; accepted because of {fifo_index_rule, warn}", [Tab, Why]),
+                    ok;
+                _Refuse ->
+                    Problem
+            end;
+        Verdict ->
+            Verdict
+    end.
+
+%% The options an index takes from its table: those bounding how long data is kept, so it
+%% expires the same way, and max_open_files, which FIFO needs from the instance a standalone
+%% table's index gets of its own (inside an alias it is the alias' option, not the index's).
+%% Options tuned for the table's own keys (comparator, prefix extractor, buffers) do not fit
+%% an index's keys.
+index_opts(Opts) ->
+    [Opt || {Key, _} = Opt <- latest_wins(Opts), lists:member(Key, [max_open_files | ?COMPACTION_OPTS])].
+
+%% The admin db's own column families hold the table metadata: compaction options meant for
+%% the alias' tables (FIFO, ttl) must never make them age out.
+without_compaction_opts(Opts) ->
+    [Opt || {Key, _} = Opt <- Opts, not lists:member(Key, ?COMPACTION_OPTS)].
+
+%% infinity switches a FIFO size cap off: RocksDB's largest value.
+unlimited_fifo_size(Opts) ->
+    case proplists:get_value(compaction_options_fifo, Opts) of
+        Fifo when is_list(Fifo) ->
+            lists:keystore(compaction_options_fifo, 1, Opts,
+                           {compaction_options_fifo, [unlimited(Opt) || Opt <- Fifo]});
+        _NoFifoOptions ->
+            Opts
+    end.
+
+unlimited({Cap, infinity}) when Cap =:= max_table_files_size; Cap =:= max_data_files_size -> {Cap, ?UNLIMITED_FIFO_SIZE};
+unlimited(Opt) -> Opt.
+
+%% Options are a proplist: {Key, Value} pairs and bare atoms, the nested option lists lists of
+%% the same.
+valid_opts(Opts) when is_list(Opts) ->
+    lists:all(fun valid_opt/1, Opts);
+valid_opts(_NotAList) ->
+    false.
+
+valid_opt(Key) when is_atom(Key) ->
+    true;
+valid_opt({Key, Nested}) when ?IS_NESTED_OPT(Key) ->
+    valid_opts(Nested);
+valid_opt({Key, _Value}) ->
+    is_atom(Key);
+valid_opt(_NotAnOption) ->
+    false.
+
+%% De-duplicates options, a later one overriding an earlier one with the same key; a bare
+%% atom is an option set to true, as in a proplist. Options that are lists of options
+%% themselves are merged the same way, so overriding one of their sub-options keeps the others.
+latest_wins(Opts) ->
+    lists:foldl(fun(Opt, Acc) ->
+                        {K, V} = option(Opt),
+                        case lists:keyfind(K, 1, Acc) of
+                            {K, Earlier} when ?IS_NESTED_OPT(K), is_list(Earlier), is_list(V) ->
+                                lists:keystore(K, 1, Acc, {K, latest_wins(Earlier ++ V)});
+                            _ ->
+                                lists:keystore(K, 1, Acc, {K, nested_latest_wins(K, V)})
+                        end
+                end, [], Opts).
+
+nested_latest_wins(K, V) when ?IS_NESTED_OPT(K), is_list(V) -> latest_wins(V);
+nested_latest_wins(_K, V) -> V.
+
+option(Key) when is_atom(Key) -> {Key, true};
+option({_Key, _Value} = Opt) -> Opt.
 
 default_open_opts() ->
     [ {create_if_missing, true}

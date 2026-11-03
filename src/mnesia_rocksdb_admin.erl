@@ -39,7 +39,9 @@
 
 -export([ meta/0
         , get_cached_env/2
-        , set_and_cache_env/2 ]).
+        , set_and_cache_env/2
+        , instance_db_opts/1
+        , rdb_opt_standalone/1 ]).
 
 -include("mnesia_rocksdb.hrl").
 -include("mnesia_rocksdb_int.hrl").
@@ -48,7 +50,6 @@
 -record(st, {
               backends     = #{} :: #{ alias() => backend() }
             , standalone   = #{} :: #{{alias(), table()} := cf() }
-            , default_opts = []  :: [{atom(), _}]
             }).
 
 -type st() :: #st{}.
@@ -76,7 +77,6 @@
              | {related_resources, table()}
              | {get_ref, table()}
              | {add_aliases, [alias()]}
-             | {write_table_property, tabname(), tuple()}
              | {remove_aliases, [alias()]}
              | {migrate, [tabname() | {tabname(), map()}], rpt()}
              | {prep_close, table()}
@@ -269,8 +269,27 @@ delete_info_(Ref, Tab, K) ->
     EncK = mnesia_rocksdb_lib:encode_key({info, Tab, K}, sext),
     mrdb:rdb_delete(Ref, EncK, []).
 
+%% Written in the caller's process: the admin server, which serves every alias, picks the
+%% change up from the schema table event (see handle_info/2).
 write_table_property(Alias, Tab, Prop) when is_tuple(Prop), size(Prop) >= 1 ->
-    call(Alias, {write_table_property, Tab, Prop}).
+    case stored_in(Tab, Alias) of
+        true ->
+            case mnesia:write_table_property(Tab, Prop) of
+                {atomic, ok} -> ok;
+                {aborted, Reason} -> {error, Reason}
+            end;
+        false ->
+            {error, not_found}
+    end.
+
+%% Whether this node stores Tab in Alias' instance.
+stored_in(Tab, Alias) ->
+    try mnesia:table_info(Tab, storage_type) of
+        {ext, Alias, _Mod} -> true;
+        _Elsewhere -> false
+    catch
+        exit:_NoTable -> false
+    end.
 
 -spec migrate_standalone(alias(), Tabs) -> Res when
       Tabs :: [tabname() | {tabname(),map()}],
@@ -308,11 +327,10 @@ start_link() ->
 
 init([]) ->
     _ = maybe_initial_meta(),  %% bootstrap pt
-    Opts = default_opts(),
     process_flag(trap_exit, true),
     ensure_cf_cache(),
     mnesia:subscribe({table, schema, simple}),
-    {ok, recover_state(#st{default_opts = Opts})}.
+    {ok, recover_state(#st{})}.
 
 recover_state(St0) ->
     Meta = maps:to_list(meta()),
@@ -355,22 +373,33 @@ recover_tab(_, St) ->
     St.
 
 
-%% TODO: generalize
-get_aliases() ->
-    %% Return a list of registered aliases paired with alias-specific options
-    [{rocksdb_copies, []}].
-
-%% Options for the admin db of every alias, i.e. the db shared by all column family
+%% Options for the admin db of every alias, i.e. the db shared by all its column family
 %% tables. DB-level rocksdb options (max_open_files, paranoid_checks, background threads,
-%% statistics, ...) cannot be set per column family, so this is the only place they can
-%% be configured. CF-level options in the list apply to the admin db's own column families.
+%% statistics, ...) cannot be set per column family; they are set here for every alias, and
+%% per alias in alias_rocksdb_opts (see alias_opts/1). CF-level options in the list apply
+%% to the admin db's own column families.
 default_opts() ->
     application:get_env(mnesia_rocksdb, default_rocksdb_opts, []).
 
+%% The options an alias' admin db is opened with: default_opts() under alias_opts/1.
+db_opts(Alias) ->
+    mnesia_rocksdb_lib:latest_wins(default_opts() ++ alias_opts(Alias)).
+
+%% Options for the admin db of one alias only, applied on top of default_opts(). An alias
+%% configured here gets DB-level options of its own, so tables that need them (e.g. FIFO
+%% compaction, which demands max_open_files = -1) can be given an instance of their own
+%% by putting them in that alias.
 alias_opts(Alias) ->
-    %% TODO: User should have a way to configure rocksdb options for the admin db
-    %% of a user-defined alias.
-    proplists:get_value(Alias, get_aliases(), []).
+    proplists:get_value(Alias, application:get_env(mnesia_rocksdb, alias_rocksdb_opts, []), []).
+
+%% The options the alias' instance runs with, over the library defaults: while it is open,
+%% those it was opened with, as options changed in the env take effect only when it is
+%% reopened; otherwise db_opts/1.
+instance_db_opts(Alias) ->
+    case get_ref({admin, Alias}, error) of
+        #{db_opts := DbOpts} -> DbOpts;
+        _NotOpen -> mnesia_rocksdb_lib:effective_db_opts(db_opts(Alias))
+    end.
 
 maybe_load_admin_db({Alias, Opts}, #st{backends = Bs} = St) ->
     case maps:find(Alias, Bs) of
@@ -381,8 +410,15 @@ maybe_load_admin_db({Alias, Opts}, #st{backends = Bs} = St) ->
             try_load_admin_db(Alias, Opts, St)
     end.
 
-try_load_admin_db(Alias, AliasOpts, #st{ backends = Bs } = St) ->
-    case load_admin_db(Alias, AliasOpts ++ default_opts(), St) of
+try_load_admin_db(Alias, DbOpts, #st{ backends = Bs } = St) ->
+    case DbOpts -- mnesia_rocksdb_lib:without_compaction_opts(DbOpts) of
+        [] ->
+            ok;
+        Unused ->
+            ?log(warning, "Alias ~p: ~p in default_rocksdb_opts or alias_rocksdb_opts reach no column family; "
+                 "a table takes them from its own rocksdb_opts", [Alias, Unused])
+    end,
+    case load_admin_db(Alias, DbOpts) of
         {ok, #{cf_info := CfI0, mountpoint := MP} = AdminDb} ->
             %% We need to store the persistent ref explicitly here,
             %% since mnesia knows nothing of our admin table.
@@ -396,6 +432,7 @@ try_load_admin_db(Alias, AliasOpts, #st{ backends = Bs } = St) ->
                                                             value => 2}
                                             , stats => Stats
                                             , mountpoint => MP
+                                            , db_opts => mnesia_rocksdb_lib:effective_db_opts(DbOpts)
                                             , properties =>
                                                 #{ attributes => [key, val]
                                                  }}, CfI0),
@@ -462,6 +499,8 @@ terminate(shutdown, St) ->
 terminate(_, _) ->
     ok.
 
+code_change(_FromVsn, {st, Backends, Standalone, _DefaultOpts}, _Extra) ->
+    {ok, #st{backends = Backends, standalone = Standalone}};
 code_change(_FromVsn, St, _Extra) ->
     {ok, St}.
 
@@ -481,7 +520,7 @@ handle_call_for_alias(Alias, Req, #st{backends = Backends} = St) ->
     end.
 
 do_add_aliases(Aliases, St) ->
-    New = [{A, alias_opts(A)} || A <- Aliases,
+    New = [{A, db_opts(A)} || A <- Aliases,
                                  not is_open(A, St)],
     lists:foldl(fun maybe_load_admin_db/2, St, New).
 
@@ -548,7 +587,7 @@ handle_req(Alias, {clear_table, Name}, Backend, #st{} = St) ->
               , cf_handle := CfH} = Cf} ->
             CfName = tab_to_cf_name(Name),
             ok = rocksdb:drop_column_family(DbRef, CfH),
-            {ok, CfH1} = rocksdb:create_column_family(DbRef, CfName, cfopts(rocksdb_opts_from_trec(Cf))),
+            {ok, CfH1} = rocksdb:create_column_family(DbRef, CfName, cfopts(cf_rocksdb_opts(Name, Cf))),
             ok = rocksdb:destroy_column_family(DbRef, CfH),
             Cf1 = Cf#{cf_handle := CfH1},
             St1 = update_cf(Alias, Name, Cf1, St),
@@ -585,25 +624,6 @@ handle_req(Alias, {get_ref, Name}, Backend, #st{} = St) ->
 handle_req(_Alias, {related_resources, Tab}, Backend, St) ->
     Res = get_related_resources(Tab, Backend),
     {reply, Res, St};
-handle_req(Alias, {write_table_property, Tab, Prop}, Backend, St) ->
-    case find_cf(Alias, Tab, Backend, St) of
-        {ok, #{status := opens} = Cf0} ->
-            case mnesia_schema:schema_transaction(
-                   fun() ->
-                           erase_pt(Tab),
-                           Cf = update_user_properties(Prop, Cf0),
-                           St1 = update_cf(Alias, Tab, Cf, St),
-                           put_pt(Tab, Cf),
-                           St1
-                   end) of
-                {atomic, NewSt} ->
-                    {reply, ok, NewSt};
-                {aborted, _} ->
-                    {reply, {error, badarg}, St}
-            end;
-        _ ->
-            {reply, {error, not_found}, St}
-    end;
 handle_req(Alias, {migrate, Tabs0, Rpt}, Backend, St) ->
     case prepare_migration(Alias, Tabs0, Rpt, St) of
         {ok, Tabs} ->
@@ -955,7 +975,7 @@ set_count(Count, R) when is_map(R) ->
 chunk_size(_) ->
     300.
 
-maybe_write_user_props(#{name := T, properties := #{user_properties := UPMap}}) ->
+maybe_write_user_props(#{name := T, properties := #{user_properties := UPMap}}) when is_atom(T) ->
     %% The UP map is #{Key => Prop}, where element(1, Prop) == Key
     UPs = maps:values(UPMap),
     SchemaProps = mnesia:table_info(T, user_properties),
@@ -1057,8 +1077,40 @@ props_to_map(TabName, Props) when is_atom(TabName) ->
                                                     maps:from_list(Props)),
     %% Note that user properties can have arity >= 1
     PMap#{user_properties => maps:from_list([{element(1,P), P} || P <- UPs])};
+props_to_map({Tab,index,_}, Props) ->
+    #{main_table => Tab, attributes => [key, val], user_properties => main_table_rocksdb_opts(Props)};
 props_to_map({Tab,_,_}, _) ->
     #{main_table => Tab, attributes => [key, val]}.
+
+%% An index is created from its main table's definition and shares its rocksdb_opts, so an
+%% index of a FIFO table is bounded too. FIFO drops whole files per column family, so index
+%% entries do not expire exactly with their rows: with a ttl both go at about the same age,
+%% with only a size cap the smaller index keeps entries of rows already dropped. A retainer
+%% keeps the defaults: it must hold every old value while its checkpoint is active.
+main_table_rocksdb_opts(Props) ->
+    case lists:keyfind(rocksdb_opts, 1, proplists:get_value(user_properties, Props, [])) of
+        false -> #{};
+        {rocksdb_opts, RdbOpts} -> #{rocksdb_opts => {rocksdb_opts, mnesia_rocksdb_lib:index_opts(RdbOpts)}}
+    end.
+
+%% The rocksdb_opts a table's column family or standalone instance is opened with. An index
+%% takes its main table's current options from the schema, as on a restart (see
+%% reopen_db/7), so it follows changes made to the table since the index was created; the
+%% copy in its trec is for a table being created, which is not in the schema yet.
+cf_rocksdb_opts({Tab, index, _}, TRec) ->
+    case schema_rocksdb_opts(Tab) of
+        {ok, RdbOpts} -> mnesia_rocksdb_lib:index_opts(RdbOpts);
+        {error, _NotInSchema} -> rocksdb_opts_from_trec(TRec)
+    end;
+cf_rocksdb_opts(_Name, TRec) ->
+    rocksdb_opts_from_trec(TRec).
+
+schema_rocksdb_opts(Tab) ->
+    try mnesia:table_info(Tab, user_properties) of
+        UPs -> {ok, proplists:get_value(rocksdb_opts, UPs, [])}
+    catch
+        exit:Reason -> {error, Reason}
+    end.
 
 try_refresh_cf(#{alias := Alias, name := Name, properties := Ps} = Cf, Props, St) ->
     PMap = props_to_map(Name, Props),
@@ -1098,8 +1150,8 @@ create_table_as_standalone(Alias, Name, MP, TRec, St) ->
 
 do_open_standalone(CreateIfMissing, Alias, Name, MP, TRec0,
                    #st{standalone = Ts} = St) ->
-    Opts = rocksdb_opts_from_trec(TRec0),
-    case open_db_(MP, Alias, Opts, [], CreateIfMissing, Name, St) of
+    Opts = cf_rocksdb_opts(Name, TRec0),
+    case open_db_(MP, Alias, Opts, [], CreateIfMissing, Name) of
         {ok, #{ cf_info := CfI }} ->
             DbRec = maps:get({ext,Alias,"default"}, CfI),
             CfNames = maps:keys(CfI),
@@ -1181,7 +1233,7 @@ rocksdb_opts_from_trec(TRec) ->
 
 create_table_as_cf(Alias, Name, #{db_ref := DbRef} = R, St) ->
     CfName = tab_to_cf_name(Name),
-    case create_column_family(DbRef, CfName, cfopts(rocksdb_opts_from_trec(R)), R) of
+    case create_column_family(DbRef, CfName, cfopts(cf_rocksdb_opts(Name, R)), R) of
         {ok, CfH} ->
             R1 = check_version_and_encoding(R#{ cf_handle => CfH
                                               , type => column_family }),
@@ -1319,45 +1371,122 @@ do_delete_table(Alias, Name, Backend, #st{} = St) ->
             {error, not_found}
     end.
 
-load_admin_db(Alias, Opts, St) ->
+load_admin_db(Alias, Opts) ->
     DbName = {admin, Alias},
-    open_db(DbName, Alias, Opts, [DbName], true, St).
+    open_db(DbName, Alias, Opts, [DbName], true).
 
-open_db(DbName, Alias, Opts, CFs, CreateIfMissing, St) ->
+open_db(DbName, Alias, Opts, CFs, CreateIfMissing) ->
     MP = mnesia_rocksdb_lib:data_mountpoint(DbName),
-    open_db_(MP, Alias, Opts, CFs, CreateIfMissing, DbName, St).
+    open_db_(MP, Alias, Opts, CFs, CreateIfMissing, DbName).
 
-open_db_(MP, Alias, Opts, CFs0, CreateIfMissing, DbName, #st{backends = Backends} = St) ->
+open_db_(MP, Alias, Opts0, CFs0, CreateIfMissing, DbName) ->
+    Opts = mnesia_rocksdb_lib:latest_wins(Opts0),
     Acc0 = #{ mountpoint => MP },
     case filelib:is_dir(MP) of
         false when CreateIfMissing ->
             %% not yet created
-            CFs = cfs(CFs0, Opts),
-            file:make_dir(MP),
+            CFs = case DbName of
+                {admin, _} -> cfs(CFs0, mnesia_rocksdb_lib:without_compaction_opts(Opts));
+                _ -> cfs(CFs0, Opts)
+            end,
+            Created = file:make_dir(MP),
             OpenOpts = open_opts(Opts),
             log_invalid_opts(Opts),
-            OpenRes = mnesia_rocksdb_lib:open_rocksdb(MP, OpenOpts, CFs),
-            map_cfs(OpenRes, CFs, Alias, Acc0);
+            case mnesia_rocksdb_lib:open_rocksdb(MP, OpenOpts, CFs) of
+                {ok, _, _} = Opened ->
+                    map_cfs(Opened, CFs, Alias, Acc0);
+                {error, Reason} ->
+                    _ = [file:del_dir_r(MP) || Created =:= ok],
+                    {error, {cannot_open, MP, Reason}}
+            end;
         false ->
             {error, enoent};
         true ->
             %% Assumption: even an old rocksdb database file will have at least "default"
-            {ok, CFs} = rocksdb:list_column_families(MP, Opts),
-            CFsWithOpts = case map_size(Backends) of
-                0 ->
-                    [{CF, cfopts([])} || CF <- CFs];
-                _ ->
-                    {ok, Trec} = find_cf(Alias, DbName, maps:get(Alias, Backends), St),
-                    StoredOpts = rocksdb_opts_from_trec(Trec),
-                    [{CF, cfopts(StoredOpts)} || CF <- CFs]
-            end,
-            map_cfs(
-              rocksdb_open(MP, open_opts(Opts), CFsWithOpts),
-              CFsWithOpts,
-              Alias,
-              Acc0
-            )
+            case rocksdb:list_column_families(MP, Opts) of
+                {ok, CFs} ->
+                    reopen_db(MP, Alias, Opts, CFs, DbName, Acc0);
+                {error, Reason} ->
+                    {error, {cannot_reopen, MP, Reason, #{}}}
+            end
     end.
+
+reopen_db(MP, Alias, Opts, CFs, {admin, _}, Acc0) ->
+    Tabs = [cf_name_to_tab(CF, Alias) || CF <- CFs],
+    Indexed = lists:usort([Tab || {Tab, index, _} <- Tabs]),
+    TabOpts = maps:from_list([{Tab, reopen_table_opts(Tab, Alias)}
+                              || Tab <- lists:usort([Tab || Tab <- Tabs, is_atom(Tab)] ++ Indexed)]),
+    Reopened = [{CF, Tab, reopen_rocksdb_opts(Tab, TabOpts, Opts)} || {CF, Tab} <- lists:zip(CFs, Tabs)],
+    Refused = [{Why, Tab} || {Tab, RdbOpts} <- maps:to_list(TabOpts),
+                             {error, Why} <- [mnesia_rocksdb_lib:fifo_check(RdbOpts, lists:member(Tab, Indexed), Opts, Tab)]],
+    case Refused of
+        [] ->
+            open_reopened(MP, Alias, Opts, Reopened, Acc0);
+        [_ | _] ->
+            {error, {cannot_reopen, MP, Refused, escape_hatch(Refused, #{tables_with_own_options => own_options(Reopened)})}}
+    end;
+%% A standalone instance holds one table, opened with the table's options (see
+%% do_open_standalone/6).
+reopen_db(MP, Alias, Opts, CFs, DbName, Acc0) ->
+    open_reopened(MP, Alias, Opts, [{CF, DbName, Opts} || CF <- CFs], Acc0).
+
+escape_hatch(Refused, Info) ->
+    case lists:keymember(fifo_with_index_requires_ttl_and_no_size_cap, 1, Refused) of
+        true -> Info#{escape_hatch => {mnesia_rocksdb, [{fifo_index_rule, warn}]}};
+        false -> Info
+    end.
+
+open_reopened(MP, Alias, Opts, Reopened, Acc0) ->
+    CFsWithOpts = [{CF, cfopts(CfOpts)} || {CF, _Tab, CfOpts} <- Reopened],
+    case rocksdb_open(MP, Opts, CFsWithOpts) of
+        {ok, _, _} = Opened ->
+            map_cfs(Opened, CFsWithOpts, Alias, Acc0);
+        {error, Reason} ->
+            {error, {cannot_reopen, MP, Reason, #{tables_with_own_options => own_options(Reopened)}}}
+    end.
+
+own_options(Reopened) ->
+    [{Tab, CfOpts} || {_CF, Tab, CfOpts} <- Reopened, is_table(Tab), CfOpts =/= []].
+
+is_table(Tab) when is_atom(Tab) -> true;
+is_table({_, index, _}) -> true;
+is_table(_AdminOwnOrRetainer) -> false.
+
+%% RocksDB does not keep the options of a column family: an existing admin db has to be
+%% reopened with each column family's options again, the same ones it was created with,
+%% or it silently falls back to the defaults.
+%% Table column families take the table's rocksdb_opts (see create_table_as_cf/4). mnesia
+%% has loaded the schema before it adds the aliases of a backend, so they can be read from
+%% there, once per table, before any table is loaded. Index column families take their main
+%% table's and retainer ones the defaults (see props_to_map/2); the admin db's own ones take
+%% the options of the db without compaction options (see cfs/2). A column family left behind
+%% by a table this node now stores elsewhere is reopened with the defaults.
+reopen_table_opts(Tab, Alias) ->
+    case {stored_in(Tab, Alias), schema_rocksdb_opts(Tab)} of
+        {true, {ok, RdbOpts}} ->
+            case mnesia_rocksdb_lib:valid_opts(RdbOpts) of
+                true ->
+                    RdbOpts;
+                false ->
+                    ?log(warning, "Reopening table ~p with default options: its rocksdb_opts are malformed (~p)", [Tab, RdbOpts]),
+                    []
+            end;
+        {false, {ok, _RdbOpts}} ->
+            ?log(warning, "Reopening the column family of ~p in alias ~p with default options: the table is not stored in this alias", [Tab, Alias]),
+            [];
+        {_, {error, Reason}} ->
+            ?log(warning, "Reopening table ~p with default options: its schema could not be read (~p)", [Tab, Reason]),
+            []
+    end.
+
+reopen_rocksdb_opts(Tab, TabOpts, _DbOpts) when is_atom(Tab) ->
+    maps:get(Tab, TabOpts);
+reopen_rocksdb_opts({Tab, index, _}, TabOpts, _DbOpts) ->
+    mnesia_rocksdb_lib:index_opts(maps:get(Tab, TabOpts));
+reopen_rocksdb_opts({_, retainer, _}, _TabOpts, _DbOpts) ->
+    [];
+reopen_rocksdb_opts(_AdminOwn, _TabOpts, DbOpts) ->
+    mnesia_rocksdb_lib:without_compaction_opts(DbOpts).
 
 log_invalid_opts(Opts) ->
     Combined = rdb_type_extractor:open_opts_allowed() ++ rdb_type_extractor:cf_opts_allowed(),
@@ -1368,17 +1497,8 @@ log_invalid_opts(Opts) ->
             ?log(warning, "The following options will be ignored as they are not supported in erlang's rocksdb:options(): ~p", [NonEmptyList])
     end.
 
-% filter and remove duplicates.
-filter_opts(Defaults, Opts, Allowed) ->
-    Filtered = lists:filter(fun({Key, _Value}) -> lists:member(Key, Allowed) end, Defaults ++ Opts),
-    % de-duplicates and override defaults
-    lists:foldl(fun
-        ({Key, Value}, Acc) ->
-            [{Key, Value} | lists:keydelete(Key, 1, Acc)]
-        end,
-        [],
-        Filtered
-    ).
+allowed_opts(Opts, Allowed) ->
+    [Opt || {Key, _Value} = Opt <- Opts, lists:member(Key, Allowed)].
 
 rocksdb_open(MP, Opts, CFs) ->
     %% rocksdb:open(MP, Opts, CFs),
@@ -1394,7 +1514,8 @@ is_open(Alias, #st{backends = Bs}) ->
 
 remove_admin_db(Alias, #st{backends = Bs} = St) ->
     case maps:find(Alias, Bs) of
-        {ok, #{db_ref := DbRef, mountpoint := MP}} ->
+        {ok, #{db_ref := DbRef, mountpoint := MP, cf_info := CfI}} ->
+            erase_pt_list([Name || {Name, Cf} <- maps:to_list(CfI), maps:get(type, Cf, column_family) =/= standalone]),
             close_and_delete(DbRef, MP),
             St#st{backends = maps:remove(Alias, Bs)};
         error ->
@@ -1406,21 +1527,13 @@ cfs(CFs, Opts) ->
     [{"default", CfOpts}] ++ lists:flatmap(fun(Tab) -> admin_cfs(Tab, CfOpts) end, CFs).
 
 cfopts(Opts) ->
-    filter_opts(
-        [{merge_operator, erlang_merge_operator}],
-        may_re_init_new_native_block_cache(Opts),
-        rdb_type_extractor:cf_opts_allowed()
-    ).
+    Merged = mnesia_rocksdb_lib:latest_wins([{merge_operator, erlang_merge_operator} | Opts]),
+    allowed_opts(mnesia_rocksdb_lib:unlimited_fifo_size(may_re_init_new_native_block_cache(Merged)),
+                 rdb_type_extractor:cf_opts_allowed()).
 
 open_opts(Opts) ->
-    filter_opts(
-        [
-            {create_if_missing, true},
-            {create_missing_column_families, true}
-        ],
-        may_enable_db_statistics(Opts),
-        rdb_type_extractor:open_opts_allowed()
-    ).
+    Merged = mnesia_rocksdb_lib:latest_wins([{create_if_missing, true}, {create_missing_column_families, true} | Opts]),
+    allowed_opts(may_enable_db_statistics(Merged), rdb_type_extractor:open_opts_allowed()).
 
 % statistics handler have to be re-inited during restart.
 % can't re-use the value stored in db.
